@@ -1,0 +1,1 @@
+"""Altyapı katmanı."""
