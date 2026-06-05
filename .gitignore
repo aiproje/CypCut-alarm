@@ -1,0 +1,34 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Local env
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Runtime
+logs/*.log
+logs/*.log.*
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp photos
+*.tmp.jpg
+*.tmp
