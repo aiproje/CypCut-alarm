@@ -239,16 +239,20 @@ class MonitorService:
     def _on_alarm(self, event: ParsedEvent, ts: datetime) -> None:
         key = f"ALARM::{event.text}"
         should_send = self._cooldown_ok(key, ts)
-        photo_path: Optional[Path] = None
-        if should_send:
-            photo_path = self._media_service.capture_jpeg()
         sent = False
         if should_send:
             message = self._format_alarm_message(event.text, ts)
-            if photo_path is not None:
-                sent = self._telegram.send_photo(photo_path, caption=message)
+            # Video çek (5 sn)
+            video_path = self._media_service.capture_video()
+            if video_path is not None:
+                sent = self._telegram.send_video(video_path, caption=message)
             else:
-                sent = self._telegram.send_message(message)
+                # Video alınamazsa fotoğraf dene
+                photo_path = self._media_service.capture_jpeg()
+                if photo_path is not None:
+                    sent = self._telegram.send_photo(photo_path, caption=message)
+                else:
+                    sent = self._telegram.send_message(message)
             self._cooldown_repo.set_last_sent(key, ts)
             if sent:
                 logger.info("Alarm bildirimi gönderildi: %s", event.text)
@@ -285,26 +289,33 @@ class MonitorService:
                 # Pause/Alarm -> Working (devam)
                 self._work_started_at = ts
                 message = self._format_resume_message(ts, result.event.text)
-            sent = self._telegram.send_message(message)
+
+            # Video + fotoğraf gönder
+            video_path = self._media_service.capture_video()
+            if video_path is not None:
+                sent = self._telegram.send_video(video_path, caption=message)
+            else:
+                photo_path = self._media_service.capture_jpeg()
+                if photo_path is not None:
+                    sent = self._telegram.send_photo(photo_path, caption=message)
+                else:
+                    sent = self._telegram.send_message(message)
             logger.info("Çalışma bildirimi gönderildi: %s", result.event.text)
 
         elif result.current == MachineState.PAUSED:
             self._work_started_at = None
             message = self._format_stop_message(ts, result.event.text)
 
-            # Alarm durumundaysa video çek
-            video_path: Optional[Path] = None
-            if self._state_manager.state == MachineState.ALARM:
-                video_path = self._media_service.capture_video()
-
-            photo_path = self._media_service.capture_jpeg()
-            sent = False
+            # Video + fotoğraf gönder
+            video_path = self._media_service.capture_video()
             if video_path is not None:
                 sent = self._telegram.send_video(video_path, caption=message)
-            elif photo_path is not None:
-                sent = self._telegram.send_photo(photo_path, caption=message)
             else:
-                sent = self._telegram.send_message(message)
+                photo_path = self._media_service.capture_jpeg()
+                if photo_path is not None:
+                    sent = self._telegram.send_photo(photo_path, caption=message)
+                else:
+                    sent = self._telegram.send_message(message)
             logger.info("Duruş bildirimi gönderildi: %s", result.event.text)
 
         elif result.current == MachineState.ALARM:
