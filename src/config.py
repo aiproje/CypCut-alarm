@@ -71,10 +71,16 @@ class AppConfig:
 
     camera_index: int | None
     camera_scan_max_index: int
+    video_duration: float
 
     db_path: Path
     app_log_path: Path
     app_log_level: str
+
+    # Retry ayarları
+    telegram_retry_check_interval: float
+    log_watcher_retry_interval: float
+    log_finder_scan_interval: float
 
     @classmethod
     def load(cls, env_file: Path | None = None) -> "AppConfig":
@@ -109,6 +115,7 @@ class AppConfig:
                 else None
             ),
             camera_scan_max_index=_get_env_int("CAMERA_SCAN_MAX_INDEX", 4),
+            video_duration=_get_env_float("VIDEO_DURATION", 5.0),
 
             db_path=_resolve_path(
                 _get_env("DB_PATH", "data/cypcut_monitor.db") or "data/cypcut_monitor.db",
@@ -119,6 +126,10 @@ class AppConfig:
                 base,
             ),
             app_log_level=(_get_env("APP_LOG_LEVEL", "INFO") or "INFO").upper(),
+
+            telegram_retry_check_interval=_get_env_float("TELEGRAM_RETRY_CHECK_INTERVAL", 5.0),
+            log_watcher_retry_interval=_get_env_float("LOG_WATCHER_RETRY_INTERVAL", 10.0),
+            log_finder_scan_interval=_get_env_float("LOG_FINDER_SCAN_INTERVAL", 5.0),
         )
 
     def validate(self) -> list[str]:
@@ -132,6 +143,8 @@ class AppConfig:
             errors.append("ALARM_COOLDOWN_SECONDS negatif olamaz.")
         if not self.log_dir:
             errors.append("LOG_DIR tanımlı değil.")
+        if self.video_duration < 1.0:
+            errors.append("VIDEO_DURATION 1 saniyeden az olamaz.")
         return errors
 
 

@@ -18,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config import AppConfig
 from src.infrastructure.camera_manager import CameraManager
 from src.infrastructure.database import Database
-from src.infrastructure.photo_service import PhotoService
+from src.infrastructure.photo_service import MediaService
 from src.infrastructure.repositories import (
     AlarmRepository,
     CooldownRepository,
@@ -47,7 +47,7 @@ def main() -> int:
         max_index=config.camera_scan_max_index,
     )
     camera.initialize()
-    photo = PhotoService(camera)
+    photo = MediaService(camera)
     db = Database(config.db_path)
     state_repo = StateRepository(db)
     alarm_repo = AlarmRepository(db)

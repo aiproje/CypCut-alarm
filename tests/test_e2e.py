@@ -46,9 +46,13 @@ def main() -> None:
         alarm_cooldown_seconds=300,
         camera_index=None,
         camera_scan_max_index=4,
+        video_duration=5.0,
         db_path=db_path,
         app_log_path=app_log,
         app_log_level="DEBUG",
+        telegram_retry_check_interval=5.0,
+        log_watcher_retry_interval=10.0,
+        log_finder_scan_interval=5.0,
     )
 
     setup_logging(app_log, level="DEBUG")

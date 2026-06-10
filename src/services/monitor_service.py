@@ -7,9 +7,15 @@ Akış:
   4. Camera initialize
   5. Telegram client kur
   6. Aktif log dosyasını bul
-  7. Watchdog + tail reader başlat
+  7. Watchdog + tail reader + log finder başlat
   8. Telegram polling başlat
   9. Ana döngü: thread'lerin yaşamasını izle
+
+Geliştirilmiş:
+  - Tüm durum geçişlerinde bildirim (IDLE→WORKING dahil)
+  - Durum metninde "kaç dakikadır çalışıyor" bilgisi
+  - Video desteği
+  - LogFinder ile periyodik tarama
 """
 from __future__ import annotations
 
@@ -28,9 +34,9 @@ from ..infrastructure.camera_manager import CameraManager
 from ..infrastructure.database import Database
 from ..infrastructure.event_parser import EventParser
 from ..infrastructure.log_directory_watcher import LogDirectoryWatcher
-from ..infrastructure.log_finder import find_latest_log
+from ..infrastructure.log_finder import LogFinder, find_latest_log
 from ..infrastructure.log_tail_reader import LogTailReader
-from ..infrastructure.photo_service import PhotoService
+from ..infrastructure.photo_service import MediaService
 from ..infrastructure.repositories import (
     AlarmRepository,
     CooldownRepository,
@@ -64,21 +70,30 @@ class MonitorService:
             preferred_index=config.camera_index,
             max_index=config.camera_scan_max_index,
         )
-        self._photo_service = PhotoService(self._camera)
+        self._media_service = MediaService(
+            self._camera,
+            video_duration=config.video_duration,
+        )
 
         self._telegram = TelegramClient(
             token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
             poll_interval=config.telegram_poll_interval,
             dry_run=config.dry_run,
+            retry_check_interval=config.telegram_retry_check_interval,
         )
-        self._telegram.set_photo_provider(self._photo_service.capture_jpeg)
+        self._telegram.set_photo_provider(self._media_service.capture_jpeg)
+        self._telegram.set_video_provider(self._media_service.capture_video)
         self._telegram.set_status_provider(self._build_status_text)
 
         self._tail: Optional[LogTailReader] = None
         self._watcher: Optional[LogDirectoryWatcher] = None
+        self._log_finder: Optional[LogFinder] = None
         self._line_queue: list[str] = []
         self._line_lock = threading.Lock()
+
+        # Çalışma başlangıç zamanı (süre hesaplamak için)
+        self._work_started_at: Optional[datetime] = None
 
     def request_stop(self, *_: object) -> None:
         logger.info("Durdurma sinyali alındı.")
@@ -133,11 +148,23 @@ class MonitorService:
         self._watcher = LogDirectoryWatcher(
             directory=self._config.log_dir,
             on_new_file=self._on_new_file,
+            retry_interval=self._config.log_watcher_retry_interval,
+            fallback_scan_interval=self._config.log_finder_scan_interval,
         )
         self._watcher.start()
 
+        # LogFinder ile ek tarama
+        self._log_finder = LogFinder(
+            log_dir=self._config.log_dir,
+            scan_interval=self._config.log_finder_scan_interval,
+            on_new_file=self._on_new_file,
+        )
+        self._log_finder.start()
+
     def _shutdown(self) -> None:
         logger.info("Servis kapatılıyor...")
+        if self._log_finder is not None:
+            self._log_finder.stop()
         if self._watcher is not None:
             self._watcher.stop()
         if self._tail is not None:
@@ -155,6 +182,10 @@ class MonitorService:
         else:
             logger.info("Kalıcı durum yüklendi: %s (ilk çalıştırma)", state.value)
         self._state_manager.restore(state)
+
+        # WORKING durumundaysa çalışma başlangıç zamanını hesapla
+        if state == MachineState.WORKING and last_event_at is not None:
+            self._work_started_at = last_event_at
 
     def _enqueue_line(self, line: str) -> None:
         """Tail reader thread'inden gelen satırları kuyruğa al."""
@@ -175,11 +206,7 @@ class MonitorService:
         logger.info("Yeni log dosyasına geçildi: %s", path)
 
     def run_once(self) -> None:
-        """Tek bir tick: kuyruğu boşalt, parse et, state güncelle, bildirim gönder.
-
-        Bu metod hem doğrudan test için hem de harici bir thread'den
-        çağrılabilir. run() içinde bu çağrılmaz; main_loop içinden çağrılır.
-        """
+        """Tek bir tick: kuyruğu boşalt, parse et, state güncelle, bildirim gönder."""
         for line in self._drain_queue():
             self._process_line(line)
 
@@ -214,7 +241,7 @@ class MonitorService:
         should_send = self._cooldown_ok(key, ts)
         photo_path: Optional[Path] = None
         if should_send:
-            photo_path = self._photo_service.capture_jpeg()
+            photo_path = self._media_service.capture_jpeg()
         sent = False
         if should_send:
             message = self._format_alarm_message(event.text, ts)
@@ -247,21 +274,45 @@ class MonitorService:
         from ..domain.machine_state import TransitionResult
 
         assert isinstance(result, TransitionResult)
-        if result.current == MachineState.PAUSED and result.previous == MachineState.WORKING:
+
+        # Tüm geçişlerde bildirim gönder
+        if result.current == MachineState.WORKING:
+            if result.previous == MachineState.IDLE:
+                # İlk çalışma başlangıcı
+                self._work_started_at = ts
+                message = self._format_start_message(ts, result.event.text)
+            else:
+                # Pause/Alarm -> Working (devam)
+                self._work_started_at = ts
+                message = self._format_resume_message(ts, result.event.text)
+            sent = self._telegram.send_message(message)
+            logger.info("Çalışma bildirimi gönderildi: %s", result.event.text)
+
+        elif result.current == MachineState.PAUSED:
+            self._work_started_at = None
             message = self._format_stop_message(ts, result.event.text)
-            photo_path = self._photo_service.capture_jpeg()
+
+            # Alarm durumundaysa video çek
+            video_path: Optional[Path] = None
+            if self._state_manager.state == MachineState.ALARM:
+                video_path = self._media_service.capture_video()
+
+            photo_path = self._media_service.capture_jpeg()
             sent = False
-            if photo_path is not None:
+            if video_path is not None:
+                sent = self._telegram.send_video(video_path, caption=message)
+            elif photo_path is not None:
                 sent = self._telegram.send_photo(photo_path, caption=message)
             else:
                 sent = self._telegram.send_message(message)
-            logger.info("Duruş bildirimi gönderildi: %s", message.splitlines()[0])
-        elif result.current == MachineState.WORKING and result.previous in (
-            MachineState.PAUSED, MachineState.IDLE
-        ):
-            message = self._format_resume_message(ts, result.event.text)
+            logger.info("Duruş bildirimi gönderildi: %s", result.event.text)
+
+        elif result.current == MachineState.ALARM:
+            # Alarm zaten _on_alarm'da işleniyor, burada sadece durum değişikliği
+            message = self._format_alarm_active_message(ts, result.event.text)
             sent = self._telegram.send_message(message)
-            logger.info("Devam bildirimi gönderildi: %s", message.splitlines()[0])
+            logger.info("Alarm durum bildirimi gönderildi: %s", result.event.text)
+
         else:
             return
 
@@ -299,9 +350,33 @@ class MonitorService:
             f"Alarm: {alarm_text}"
         )
 
+    def _format_alarm_active_message(self, ts: datetime, reason: str) -> str:
+        return (
+            "⚠️ Makine Alarm Durumunda\n"
+            "\n"
+            f"Makine: {self._config.machine_name}\n"
+            f"Saat: {ts.strftime('%H:%M:%S')}\n"
+            "\n"
+            "Alarm:\n"
+            f"{reason}"
+        )
+
     def _format_stop_message(self, ts: datetime, reason: str) -> str:
+        duration_text = self._get_work_duration(ts)
         return (
             "⏸️ Makine Durdu\n"
+            "\n"
+            f"Makine: {self._config.machine_name}\n"
+            f"Saat: {ts.strftime('%H:%M:%S')}\n"
+            + (f"Çalışma süresi: {duration_text}\n" if duration_text else "")
+            + "\n"
+            "Durum:\n"
+            f"{reason}"
+        )
+
+    def _format_start_message(self, ts: datetime, reason: str) -> str:
+        return (
+            "▶️ Makine Başladı\n"
             "\n"
             f"Makine: {self._config.machine_name}\n"
             f"Saat: {ts.strftime('%H:%M:%S')}\n"
@@ -321,6 +396,22 @@ class MonitorService:
             f"{reason}"
         )
 
+    def _get_work_duration(self, ts: datetime) -> str:
+        """Son çalışma başlangıcından bu yana geçen süreyi hesaplar."""
+        if self._work_started_at is None:
+            return ""
+        delta = ts - self._work_started_at
+        total_seconds = int(delta.total_seconds())
+        if total_seconds < 60:
+            return f"{total_seconds} saniye"
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        if minutes < 60:
+            return f"{minutes} dakika {seconds} saniye"
+        hours = minutes // 60
+        minutes = minutes % 60
+        return f"{hours} saat {minutes} dakika"
+
     def _build_status_text(self) -> str:
         state = self._state_manager.state
         last_event = self._state_manager.last_event
@@ -335,6 +426,35 @@ class MonitorService:
         last_text = last_event.text if last_event else "-"
         last_at_text = last_at.strftime("%H:%M:%S") if last_at else "-"
 
+        # Çalışma süresi bilgisi
+        work_duration = ""
+        if state == MachineState.WORKING and self._work_started_at is not None:
+            delta = datetime.now() - self._work_started_at
+            total_seconds = int(delta.total_seconds())
+            if total_seconds < 60:
+                work_duration = f"\nÇalışma süresi: {total_seconds} sn"
+            else:
+                minutes = total_seconds // 60
+                seconds = total_seconds % 60
+                if minutes < 60:
+                    work_duration = f"\nÇalışma süresi: {minutes} dk {seconds} sn"
+                else:
+                    hours = minutes // 60
+                    minutes = minutes % 60
+                    work_duration = f"\nÇalışma süresi: {hours} sa {minutes} dk"
+
+        # Durum açıklaması
+        state_desc = {
+            MachineState.IDLE: "💤 Boşta",
+            MachineState.WORKING: "⚙️ Çalışıyor" + work_duration,
+            MachineState.PAUSED: "⏸️ Duraklatılmış",
+            MachineState.ALARM: "🚨 Alarm Durumunda",
+        }.get(state, state.value)
+
+        # Kuyruk bilgisi
+        pending = self._telegram.pending_count
+        pending_text = f"\n\nGönderilmemiş mesaj: {pending}" if pending > 0 else ""
+
         recent_alarms = self._alarm_repo.recent(limit=5)
         alarm_lines = []
         for a in recent_alarms:
@@ -347,12 +467,13 @@ class MonitorService:
             f"📊 Makine Durumu\n"
             f"\n"
             f"Makine: {self._config.machine_name}\n"
-            f"Durum: {state.value}\n"
+            f"Durum: {state_desc}\n"
             f"Saat: {datetime.now().strftime('%H:%M:%S')}\n"
             f"Son olay: {last_text} @ {last_at_text}\n"
             f"\n"
             f"Kamera:\n"
             f"{cam_status}\n"
+            f"{pending_text}\n"
             f"\n"
             f"Son 5 Alarm:\n"
             f"{alarms_block}"
