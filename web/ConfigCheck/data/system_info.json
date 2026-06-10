@@ -1,0 +1,46 @@
+{
+  "system_information": [
+    {
+      "property": "Operating System",
+      "value": "Microsoft Windows 10 专业版",
+      "minimum_requirement": "Windows 7",
+      "recommended_requirement": "Windows 10",
+      "support_status": true
+    },
+    {
+      "property": "CPU",
+      "value": "11th Gen Intel(R) Core(TM) i7-11700 @ 2.50GHz",
+      "minimum_requirement": "Intel 酷睿 6代 i3",
+      "recommended_requirement": " Intel 酷睿 10代 i3",
+      "support_status": true
+    },
+    {
+      "property": "Core Count (Threads)",
+      "value": "8 Cores, 16 Threads",
+      "minimum_requirement": "",
+      "recommended_requirement": "",
+      "support_status": true
+    },
+    {
+      "property": "RAM (GB)",
+      "value": "32",
+      "minimum_requirement": "8",
+      "recommended_requirement": "16",
+      "support_status": true
+    },
+    {
+      "property": "Graphics Processor",
+      "value": "Intel, Intel(R) UHD Graphics 770 (0x0000A780)",
+      "minimum_requirement": "",
+      "recommended_requirement": "",
+      "support_status": true
+    },
+    {
+      "property": "Graphics Driver Version",
+      "value": "30.0.101.1273",
+      "minimum_requirement": "",
+      "recommended_requirement": "",
+      "support_status": true
+    }
+  ]
+}

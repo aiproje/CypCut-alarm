@@ -1,0 +1,48 @@
+button {
+    cursor: pointer;
+    font-size: 70%;
+    font-family: arial, sans-serif;
+}
+
+
+.hover-title {
+  white-space: pre-line; /* 或者使用 normal 并在title内容中使用换行符\n */
+}
+
+.changed-node {
+    stroke: #DDA0DD !important;
+    fill: #DDA0DD !important;
+}
+.hovered-node-parent {
+    fill: cadetblue !important;
+}
+.hovered-node-child {
+    fill: darkorange !important;
+}
+.hovered-node {
+    cursor: pointer;
+    fill: yellow !important;
+}
+.hovered-edge-in {
+    stroke: green !important;
+    stroke-width: 4px;
+}
+.hovered-edge-out {
+    stroke: red !important;
+    stroke-width: 4px;
+}
+.hovered-edge-in-text {
+    stroke: green !important;
+}
+.hovered-edge-out-text {
+    stroke: red !important;
+}
+
+.attr-hight-light ellipse,
+.attr-hight-light polygon {
+    fill: red !important;
+}
+.attr-hight-light path {
+    stroke: red !important;
+    stroke-width: 4px;
+}

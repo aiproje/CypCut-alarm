@@ -1,0 +1,93 @@
+<html lang="en">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>Webgraphviz</title>
+    <link rel="stylesheet" href="css/node_hover.css">
+    <!-- 引入 layui.css -->
+    <link rel="stylesheet" href="//unpkg.com/layui@2.6.8/dist/css/layui.css">
+</head>
+<body id="task_gv">
+    <div id="graphviz_svg_div" style="margin-top:100px">
+        <!-- Target for dynamic svg generation -->
+    </div>
+</body>
+</html>
+<script language="javascript" type="text/javascript" src="./js/jquery.min.js"></script>
+<script language="javascript" type="text/javascript" src="./js/d3.v6.min.js"></script>
+<script language="javascript" type="text/javascript" src="./js/viz.js"></script>
+<script src="//unpkg.com/layui@2.6.8/dist/layui.js"></script>
+
+<script>
+    const currentUrl = window.location.href;
+    const url = new URL(currentUrl);
+    const params = new URLSearchParams(url.search);
+    const taskId = params.get('TaskID');
+    if (taskId !== undefined && taskId !== null && taskId != "") {
+        $('#task_gv').attr("taskid", taskId)
+        console.log(taskId);
+    }
+
+    function UpdateGraphviz(gvData) {
+        var content = gvData.data;
+        var hoverData = gvData.hover;
+        if (content.indexOf("digraph") < 0) {
+            content = "digraph G {" + content + "}";
+        }
+        Viz.instance().then(function (viz) {
+            var svg = viz.renderSVGElement(content);
+            //console.log(svg)
+            //console.log(svg.outerHTML)
+            //$('#graphviz_svg_div').html("<hr>" + svg.outerHTML);
+            $('#graphviz_svg_div').html("");
+            document.getElementById("graphviz_svg_div").appendChild(svg);
+            addHover(hoverData);
+        });
+    }
+
+    function addHover(hoverData) {
+        if (hoverData != "") {
+            console.log(hoverData)
+            d3.selectAll('g.node').each(function () {
+                d3.select(this).attr("cursor", "pointer");
+                let nodeId = d3.select(this).select('title').text();
+                //console.log(nodeId)
+                d3.select(this).select("title")
+                    //.attr("class", "hover-title")
+                    .html(hoverData[nodeId]);
+            })
+        }
+        // Add hover event listeners to nodes
+        d3.selectAll('g.node').on("mouseover", function (event, d) {
+                // Highlight the hovered node
+                d3.select(this).select('ellipse').classed('hovered-node', true);
+            }).on("mouseout", function (event, d) {
+                // Remove highlight from the hovered node
+                d3.select(this).select('ellipse').classed('hovered-node', false);
+                d3.selectAll('g.node').select('ellipse').classed('hovered-node-child', false);
+                d3.selectAll('g.node').select('ellipse').classed('hovered-node-parent', false);
+                // Remove highlight from related edges
+                d3.selectAll('g.edge').select('path').classed('hovered-edge-in', false);
+                d3.selectAll('g.edge').select('path').classed('hovered-edge-out', false);
+            });
+    }
+
+    $(document).ready(function () {
+        var taskId = $('#task_gv').attr("taskid");
+        $.ajax({
+            url: '/getTaskGV',
+            type: 'GET',
+            dataType: 'text',
+            "data": {
+                "TaskID": taskId
+            },
+            responseType: 'json',
+            success: function (resp) {
+                $("#graphviz_svg_div").html("");
+                var respJ = JSON.parse(resp);
+                console.log(respJ);
+                UpdateGraphviz(respJ);
+            }
+        })
+
+    })
+</script>
