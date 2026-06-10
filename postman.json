@@ -1,0 +1,149 @@
+{
+  "info": {
+    "name": "fsdc Task Client API",
+    "_postman_id": "cypcut-fsdc-local",
+    "description": "Reverse engineered API collection from fsdc.exe (localhost:9527)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:9527"
+    }
+  ],
+  "item": [
+    {
+      "name": "Plan List",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/list",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      }
+    },
+    {
+      "name": "Plan Task List",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/task/list",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"PlanCode\":10000}"
+        }
+      }
+    },
+    {
+      "name": "Plan Task Stat",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/task/stat",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"PlanCode\":10000}"
+        }
+      }
+    },
+    {
+      "name": "Add Task",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/task/add",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"PlanCode\":10000,\"TaskName\":\"test\",\"FilePath\":\"C:\\\\test.cnc\"}"
+        }
+      }
+    },
+    {
+      "name": "Update Task",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/task/update",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"TaskID\":123,\"PlanCount\":10}"
+        }
+      }
+    },
+    {
+      "name": "Delete Task V2",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/task/delete/v2",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"TaskID\":123,\"IsClient\":true}"
+        }
+      }
+    },
+    {
+      "name": "Task Load",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/task/load",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"TaskID\":123,\"FileName\":\"demo.cnc\"}"
+        }
+      }
+    },
+    {
+      "name": "Delete Task List",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/task/list/delete",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"TaskIDs\":[123,124]}"
+        }
+      }
+    },
+    {
+      "name": "Update Plan Count",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/web/taskclient/plan/task/plancount/update",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"TaskID\":123,\"Amount\":10,\"NestID\":1}"
+        }
+      }
+    },
+    {
+      "name": "Load Image",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/load/image?FilePath=C:\\test.png"
+      }
+    }
+  ]
+}
