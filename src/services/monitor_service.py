@@ -37,6 +37,7 @@ from ..infrastructure.log_directory_watcher import LogDirectoryWatcher
 from ..infrastructure.log_finder import LogFinder, find_latest_log
 from ..infrastructure.log_tail_reader import LogTailReader
 from ..infrastructure.photo_service import MediaService
+from ..infrastructure.screen_capture import ScreenCapture
 from ..infrastructure.repositories import (
     AlarmRepository,
     CooldownRepository,
@@ -75,6 +76,8 @@ class MonitorService:
             video_duration=config.video_duration,
         )
 
+        self._screen_capture = ScreenCapture()
+
         self._telegram = TelegramClient(
             token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -85,6 +88,7 @@ class MonitorService:
         self._telegram.set_photo_provider(self._media_service.capture_jpeg)
         self._telegram.set_video_provider(self._media_service.capture_video)
         self._telegram.set_status_provider(self._build_status_text)
+        self._telegram.set_screen_capture_provider(self._screen_capture.capture)
 
         self._tail: Optional[LogTailReader] = None
         self._watcher: Optional[LogDirectoryWatcher] = None

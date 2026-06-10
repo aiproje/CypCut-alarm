@@ -78,6 +78,7 @@ class TelegramClient:
         self._photo_provider: Optional[Callable[[], Optional[Path]]] = None
         self._video_provider: Optional[Callable[[], Optional[Path]]] = None
         self._status_provider: Optional[Callable[[], str]] = None
+        self._screen_capture_provider: Optional[Callable[[], Optional[Path]]] = None
 
         # Retry kuyruğu
         self._pending: deque[_PendingMessage] = deque()
@@ -118,6 +119,9 @@ class TelegramClient:
 
     def set_status_provider(self, provider: Callable[[], str]) -> None:
         self._status_provider = provider
+
+    def set_screen_capture_provider(self, provider: Callable[[], Optional[Path]]) -> None:
+        self._screen_capture_provider = provider
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -287,6 +291,8 @@ class TelegramClient:
             self._handle_video()
         elif command == "DURUM":
             self._handle_durum()
+        elif command == "EKRAN":
+            self._handle_ekran()
         else:
             logger.debug("Bilinmeyen komut yoksayıldı: %s", command)
 
@@ -343,6 +349,27 @@ class TelegramClient:
             self.send_message("Durum alınamadı: %s" % exc)
             return
         self.send_message(text)
+
+    def _handle_ekran(self) -> None:
+        if self._screen_capture_provider is None:
+            self.send_message("Ekran görüntüsü özelliği yapılandırılmamış.")
+            return
+        try:
+            photo_path = self._screen_capture_provider()
+        except Exception as exc:
+            logger.exception("EKRAN sağlayıcı hatası: %s", exc)
+            self.send_message("Ekran görüntüsü hatası: %s" % exc)
+            return
+        if photo_path is None:
+            self.send_message("Ekran görüntüsü alınamadı.")
+            return
+        caption = "🖥️ CypCut Ekran Görüntüsü"
+        sent = self.send_photo(photo_path, caption=caption)
+        if sent:
+            try:
+                photo_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Geçici ekran görüntüsü silinemedi: %s", exc)
 
     def send_message(self, text: str) -> bool:
         """Kanal/grup'a metin mesajı gönderir. Başarısızsa kuyruğa ekler."""

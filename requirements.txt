@@ -3,3 +3,4 @@ striprtf>=0.0.26
 python-dotenv>=1.0.0
 opencv-python>=4.9.0
 requests>=2.31.0
+pywin32>=306; sys_platform == "win32"
