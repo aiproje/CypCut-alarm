@@ -79,6 +79,7 @@ class TelegramClient:
         self._video_provider: Optional[Callable[[], Optional[Path]]] = None
         self._status_provider: Optional[Callable[[], str]] = None
         self._screen_capture_provider: Optional[Callable[[], Optional[Path]]] = None
+        self._ocr_provider: Optional[Callable[[Path], Optional[str]]] = None
 
         # Retry kuyruğu
         self._pending: deque[_PendingMessage] = deque()
@@ -122,6 +123,9 @@ class TelegramClient:
 
     def set_screen_capture_provider(self, provider: Callable[[], Optional[Path]]) -> None:
         self._screen_capture_provider = provider
+
+    def set_ocr_provider(self, provider: Callable[[Path], Optional[str]]) -> None:
+        self._ocr_provider = provider
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -293,6 +297,8 @@ class TelegramClient:
             self._handle_durum()
         elif command == "EKRAN":
             self._handle_ekran()
+        elif command == "EKRAN_OCR":
+            self._handle_ekran_ocr()
         else:
             logger.debug("Bilinmeyen komut yoksayıldı: %s", command)
 
@@ -370,6 +376,49 @@ class TelegramClient:
                 photo_path.unlink(missing_ok=True)
             except OSError as exc:
                 logger.warning("Geçici ekran görüntüsü silinemedi: %s", exc)
+
+    def _handle_ekran_ocr(self) -> None:
+        if self._screen_capture_provider is None:
+            self.send_message("Ekran görüntüsü özelliği yapılandırılmamış.")
+            return
+        if self._ocr_provider is None:
+            self.send_message("OCR özelliği yapılandırılmamış.")
+            return
+        try:
+            photo_path = self._screen_capture_provider()
+        except Exception as exc:
+            logger.exception("EKRAN_OCR ekran görüntüsü hatası: %s", exc)
+            self.send_message("Ekran görüntüsü hatası: %s" % exc)
+            return
+        if photo_path is None:
+            self.send_message("Ekran görüntüsü alınamadı.")
+            return
+        try:
+            ocr_text = self._ocr_provider(photo_path)
+        except Exception as exc:
+            logger.exception("EKRAN_OCR OCR hatası: %s", exc)
+            self.send_message("OCR hatası: %s" % exc)
+            try:
+                photo_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        if ocr_text is None:
+            self.send_message("OCR başarısız oldu veya sonuç alınamadı.")
+            try:
+                photo_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        if not ocr_text.strip():
+            message = "🔍 Ekran Görüntüsü OCR Sonucu\n\nMetin bulunamadı."
+        else:
+            message = "🔍 Ekran Görüntüsü OCR Sonucu\n\n" + ocr_text
+        self.send_message(message)
+        try:
+            photo_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Geçici ekran görüntüsü silinemedi: %s", exc)
 
     def send_message(self, text: str) -> bool:
         """Kanal/grup'a metin mesajı gönderir. Başarısızsa kuyruğa ekler."""

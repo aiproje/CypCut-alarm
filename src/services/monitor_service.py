@@ -36,6 +36,7 @@ from ..infrastructure.event_parser import EventParser
 from ..infrastructure.log_directory_watcher import LogDirectoryWatcher
 from ..infrastructure.log_finder import LogFinder, find_latest_log
 from ..infrastructure.log_tail_reader import LogTailReader
+from ..infrastructure.ocr_service import OcrService
 from ..infrastructure.photo_service import MediaService
 from ..infrastructure.screen_capture import ScreenCapture
 from ..infrastructure.repositories import (
@@ -77,6 +78,7 @@ class MonitorService:
         )
 
         self._screen_capture = ScreenCapture()
+        self._ocr_service = OcrService()
 
         self._telegram = TelegramClient(
             token=config.telegram_bot_token,
@@ -89,6 +91,7 @@ class MonitorService:
         self._telegram.set_video_provider(self._media_service.capture_video)
         self._telegram.set_status_provider(self._build_status_text)
         self._telegram.set_screen_capture_provider(self._screen_capture.capture)
+        self._telegram.set_ocr_provider(self._ocr_service.recognize)
 
         self._tail: Optional[LogTailReader] = None
         self._watcher: Optional[LogDirectoryWatcher] = None
