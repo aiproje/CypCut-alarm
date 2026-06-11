@@ -45,7 +45,7 @@ class OcrService:
         from PIL import Image
 
         CROP_TOP = 1286
-        CROP_BOTTOM = 494
+        CROP_BOTTOM = 474
         CROP_LEFT = 257
         CROP_RIGHT = 25
 
