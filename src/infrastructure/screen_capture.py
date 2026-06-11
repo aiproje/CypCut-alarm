@@ -177,7 +177,7 @@ def _convert_bmp_to_jpeg(
         logger.warning("JPEG çevirme hatası: %s", exc)
 
 
-def _capture_full_screen() -> Optional[Path"]:
+def _capture_full_screen() -> Optional[Path]:
     """Tüm ekranın görüntüsünü alır, JPEG olarak kaydeder."""
     try:
         import win32gui
