@@ -132,17 +132,11 @@ def _capture_with_printwindow(hwnd: int) -> Optional[Path]:
 
     bpp = bmp_info.get("bmBitsPixel", 32)
     if bpp == 32:
-        # BGRA -> RGBA olarak oku, sonra RGB'ye çevir
-        img = Image.frombuffer(
-            "RGBA",
-            (width, height),
-            bmp_bits,
-            "raw",
-            "BGRA",
-            width * 4,
-            -1,
-        )
-        img = img.convert("RGB")
+        # BGRA -> RGB: numpy ile düzgün dönüşüm
+        import numpy as np
+        raw = np.frombuffer(bmp_bits, dtype=np.uint8).reshape((height, width, 4))
+        rgb = raw[:, :, :3][:, :, ::-1]  # BGR -> RGB
+        img = Image.fromarray(rgb, "RGB")
     else:
         img = Image.frombuffer(
             "RGB",
@@ -151,7 +145,6 @@ def _capture_with_printwindow(hwnd: int) -> Optional[Path]:
             "raw",
             "BGR",
             bmp_info.get("bmWidthBytes", width * 3),
-            -1,
         )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
