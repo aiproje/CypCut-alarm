@@ -36,8 +36,49 @@ class OcrService:
     def is_available(self) -> bool:
         return self._available
 
+    def _crop_image(self, image_path: Path) -> Path:
+        """Görüntüyü OCR için kırpar.
+
+        Kırpma değerleri (piksel cinsinden):
+          Üst: 1286, Alt: 514, Sol: 257, Sağ: 25
+        """
+        from PIL import Image
+
+        CROP_TOP = 1286
+        CROP_BOTTOM = 514
+        CROP_LEFT = 257
+        CROP_RIGHT = 25
+
+        try:
+            img = Image.open(str(image_path))
+            width, height = img.size
+            logger.info("Orijinal görüntü boyutu: %dx%d", width, height)
+
+            left = CROP_LEFT
+            top = CROP_TOP
+            right = width - CROP_RIGHT
+            bottom = height - CROP_BOTTOM
+
+            if left >= right or top >= bottom:
+                logger.warning("Kırpma alanları geçersiz, orijinal görüntü kullanılıyor.")
+                return image_path
+
+            cropped = img.crop((left, top, right, bottom))
+
+            cropped_path = image_path.parent / f"cropped_{image_path.name}"
+            cropped.save(str(cropped_path), "JPEG", quality=95)
+            logger.info("Görüntü kırpıldı: (%d,%d)-(%d,%d) -> %s",
+                        left, top, right, bottom, cropped_path)
+            return cropped_path
+
+        except Exception as exc:
+            logger.warning("Görüntü kırpma hatası, orijinal kullanılıyor: %s", exc)
+            return image_path
+
     def recognize(self, image_path: Path) -> Optional[str]:
         """Verilen görüntü dosyasından metin çıkarır.
+
+        OCR'dan önce görüntüyü belirli piksel değerlerine göre kırpar.
 
         Args:
             image_path: JPEG/PNG gibi bir görüntü dosyası yolu.
@@ -53,11 +94,20 @@ class OcrService:
             logger.warning("Görüntü dosyası bulunamadı: %s", image_path)
             return None
 
+        # Görüntüyü kırp ve OCR'a hazırla
+        cropped_path = self._crop_image(image_path)
         try:
-            result, elapse = self._engine(str(image_path))
+            result, elapse = self._engine(str(cropped_path))
         except Exception as exc:
             logger.exception("OCR hatası: %s", exc)
             return None
+        finally:
+            # Geçici kırpılmış dosyayı temizle
+            if cropped_path != image_path:
+                try:
+                    cropped_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
         if result is None or len(result) == 0:
             logger.info("OCR sonucu boş (elapse: %s)", elapse)
