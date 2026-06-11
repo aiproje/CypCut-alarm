@@ -132,21 +132,27 @@ def _capture_with_printwindow(hwnd: int) -> Optional[Path]:
 
     bpp = bmp_info.get("bmBitsPixel", 32)
     if bpp == 32:
-        raw_mode = "BGRA"
-        stride = width * 4
+        # BGRA -> RGBA olarak oku, sonra RGB'ye çevir
+        img = Image.frombuffer(
+            "RGBA",
+            (width, height),
+            bmp_bits,
+            "raw",
+            "BGRA",
+            width * 4,
+            -1,
+        )
+        img = img.convert("RGB")
     else:
-        raw_mode = "BGR"
-        stride = bmp_info.get("bmWidthBytes", width * 3)
-
-    img = Image.frombuffer(
-        "RGB",
-        (width, height),
-        bmp_bits,
-        "raw",
-        raw_mode,
-        stride,
-        -1,  # Dikey çevirme (BMP alt-üst kayıtlıdır)
-    )
+        img = Image.frombuffer(
+            "RGB",
+            (width, height),
+            bmp_bits,
+            "raw",
+            "BGR",
+            bmp_info.get("bmWidthBytes", width * 3),
+            -1,
+        )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     tmp_path = Path(tempfile.gettempdir()) / f"cypcut_screen_{ts}.jpg"
