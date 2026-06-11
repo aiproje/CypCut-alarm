@@ -133,7 +133,7 @@ def _capture_window_win32(hwnd: int) -> Optional[Path]:
     return None
 
 
-def _capture_window(hwnd: int) -> Optional[Path"]:
+def _capture_window(hwnd: int) -> Optional[Path]:
     """Belirtilen pencerenin ekran görüntüsünü alır, JPEG olarak kaydeder."""
     try:
         return _capture_window_pil(hwnd)
@@ -220,7 +220,7 @@ def _capture_full_screen_win32() -> Optional[Path]:
     return None
 
 
-def _capture_full_screen() -> Optional[Path"]:
+def _capture_full_screen() -> Optional[Path]:
     """Tüm ekranın görüntüsünü alır, JPEG olarak kaydeder."""
     try:
         return _capture_full_screen_pil()
