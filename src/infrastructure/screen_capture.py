@@ -46,8 +46,13 @@ def _find_cypcut_window() -> Optional[int]:
 
         all_windows.append(f"  [{hwnd}] cls={cls} | {title}")
 
-        # CypCut pencere başlığını kontrol et
-        if "激光" in title:
+        # CypCut pencere başlığını veya sınıf adını kontrol et
+        is_cypcut = (
+            "激光" in title
+            or "CypCut" in title
+            or "cypcut" in cls.lower()
+        )
+        if is_cypcut:
             skip_words = ["Edge", "Chrome", "Firefox", "Visual Studio", "Notepad",
                           "VS Code", "Sublime", "GitHub", "Explorer", "cmd",
                           "Terminal", "PowerShell", "python", "Stack"]
