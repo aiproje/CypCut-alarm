@@ -92,6 +92,7 @@ class MonitorService:
         self._telegram.set_status_provider(self._build_status_text)
         self._telegram.set_screen_capture_provider(self._screen_capture.capture)
         self._telegram.set_ocr_provider(self._ocr_service.recognize)
+        self._telegram.set_ocr_crop_provider(self._ocr_service.crop_image)
 
         self._tail: Optional[LogTailReader] = None
         self._watcher: Optional[LogDirectoryWatcher] = None

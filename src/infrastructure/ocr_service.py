@@ -36,7 +36,7 @@ class OcrService:
     def is_available(self) -> bool:
         return self._available
 
-    def _crop_image(self, image_path: Path) -> Path:
+    def crop_image(self, image_path: Path) -> Path:
         """Görüntüyü OCR için kırpar.
 
         Kırpma değerleri (piksel cinsinden):
@@ -95,19 +95,12 @@ class OcrService:
             return None
 
         # Görüntüyü kırp ve OCR'a hazırla
-        cropped_path = self._crop_image(image_path)
+        cropped_path = self.crop_image(image_path)
         try:
             result, elapse = self._engine(str(cropped_path))
         except Exception as exc:
             logger.exception("OCR hatası: %s", exc)
             return None
-        finally:
-            # Geçici kırpılmış dosyayı temizle
-            if cropped_path != image_path:
-                try:
-                    cropped_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
         if result is None or len(result) == 0:
             logger.info("OCR sonucu boş (elapse: %s)", elapse)
