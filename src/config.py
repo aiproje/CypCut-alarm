@@ -82,6 +82,10 @@ class AppConfig:
     log_watcher_retry_interval: float
     log_finder_scan_interval: float
 
+    # OCR izleme ayarları
+    ocr_monitor_interval: float
+    ocr_log_path: Path
+
     @classmethod
     def load(cls, env_file: Path | None = None) -> "AppConfig":
         """`.env` dosyasını yükleyerek yapılandırmayı oluşturur."""
@@ -130,6 +134,12 @@ class AppConfig:
             telegram_retry_check_interval=_get_env_float("TELEGRAM_RETRY_CHECK_INTERVAL", 5.0),
             log_watcher_retry_interval=_get_env_float("LOG_WATCHER_RETRY_INTERVAL", 10.0),
             log_finder_scan_interval=_get_env_float("LOG_FINDER_SCAN_INTERVAL", 5.0),
+
+            ocr_monitor_interval=_get_env_float("OCR_MONITOR_INTERVAL", 5.0),
+            ocr_log_path=_resolve_path(
+                _get_env("OCR_LOG_PATH", "logs/ocr_data.txt") or "logs/ocr_data.txt",
+                base,
+            ),
         )
 
     def validate(self) -> list[str]:

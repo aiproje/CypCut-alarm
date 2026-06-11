@@ -48,6 +48,7 @@ from ..infrastructure.repositories import (
 from ..infrastructure.rtf_cleaner import clean as rtf_clean
 from ..infrastructure.telegram_client import TelegramClient
 from ..logging_setup import get_logger
+from .ocr_monitor_service import OcrMonitorService
 
 logger = get_logger(__name__)
 
@@ -100,6 +101,9 @@ class MonitorService:
         self._line_queue: list[str] = []
         self._line_lock = threading.Lock()
 
+        # OCR izleme servisi
+        self._ocr_monitor: Optional[OcrMonitorService] = None
+
         # Çalışma başlangıç zamanı (süre hesaplamak için)
         self._work_started_at: Optional[datetime] = None
 
@@ -138,39 +142,28 @@ class MonitorService:
 
         self._telegram.start()
 
-        latest = find_latest_log(self._config.log_dir)
-        if latest is None:
-            logger.warning("Aktif log dosyası bulunamadı, bekleniyor: %s", self._config.log_dir)
-            placeholder = self._config.log_dir / "CypCut-waiting.rtf"
-        else:
-            logger.info("Aktif log dosyası: %s", latest)
-            placeholder = latest
-
-        self._tail = LogTailReader(
-            log_path=placeholder,
-            on_line=self._enqueue_line,
-            poll_interval=self._config.tail_poll_interval,
+        # OCR izleme servisini başlat
+        self._ocr_monitor = OcrMonitorService(
+            config=self._config,
+            screen_capture=self._screen_capture,
+            ocr_service=self._ocr_service,
+            telegram=self._telegram,
+            state_manager=self._state_manager,
+            state_repo=self._state_repo,
+            alarm_repo=self._alarm_repo,
+            transition_repo=self._transition_repo,
+            cooldown_repo=self._cooldown_repo,
         )
-        self._tail.start()
+        self._ocr_monitor.start()
+        logger.info("OCR izleme servisi başlatıldı.")
 
-        self._watcher = LogDirectoryWatcher(
-            directory=self._config.log_dir,
-            on_new_file=self._on_new_file,
-            retry_interval=self._config.log_watcher_retry_interval,
-            fallback_scan_interval=self._config.log_finder_scan_interval,
-        )
-        self._watcher.start()
-
-        # LogFinder ile ek tarama
-        self._log_finder = LogFinder(
-            log_dir=self._config.log_dir,
-            scan_interval=self._config.log_finder_scan_interval,
-            on_new_file=self._on_new_file,
-        )
-        self._log_finder.start()
+        # Log dosyası okuma pasif (kod korunuyor ama başlatılmıyor)
+        logger.info("Log dosyası okuma pasif modda (OCR izleme aktif).")
 
     def _shutdown(self) -> None:
         logger.info("Servis kapatılıyor...")
+        if self._ocr_monitor is not None:
+            self._ocr_monitor.stop()
         if self._log_finder is not None:
             self._log_finder.stop()
         if self._watcher is not None:
