@@ -31,6 +31,7 @@ def _find_cypcut_window() -> Optional[int]:
         return None
 
     found_hwnd: Optional[int] = None
+    all_windows: list[str] = []
 
     def _enum_callback(hwnd: int, _: object) -> bool:
         nonlocal found_hwnd
@@ -40,11 +41,15 @@ def _find_cypcut_window() -> Optional[int]:
         if not title:
             return True
 
+        # Tüm pencereleri logla (debug)
+        try:
+            cls = win32gui.GetClassName(hwnd)
+        except Exception:
+            cls = "?"
+        all_windows.append(f"  [{hwnd}] cls={cls} | {title}")
+
         # CypCut pencere başlığını kontrol et
-        # Gerçek CypCut penceresi: "CypCut激光切割控制系统" veya benzeri
-        # "激光" (laser) içermeyen başlıkları atla
         if "激光" in title:
-            # Tarayıcı/edithor pencerelerini atla (edge durumunda URL'de CypCut olabilir)
             skip_words = ["Edge", "Chrome", "Firefox", "Visual Studio", "Notepad",
                           "VS Code", "Sublime", "GitHub", "Explorer", "cmd",
                           "Terminal", "PowerShell", "python", "Stack"]
@@ -60,6 +65,17 @@ def _find_cypcut_window() -> Optional[int]:
         win32gui.EnumWindows(_enum_callback, None)
     except Exception as exc:
         logger.warning("EnumWindows hatası: %s", exc)
+
+    # Tüm pencereleri logla
+    logger.info("=== Tüm Görünür Pencereler (%d) ===", len(all_windows))
+    for w in all_windows:
+        logger.info(w)
+    logger.info("=== Pencere Listesi Sonu ===")
+
+    if found_hwnd is not None:
+        logger.info("Eşleşen CypCut penceresi: HWND=%s", found_hwnd)
+    else:
+        logger.info("CypCut penceresi bulunamadı.")
 
     return found_hwnd
 
