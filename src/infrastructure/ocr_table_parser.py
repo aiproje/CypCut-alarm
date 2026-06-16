@@ -205,7 +205,7 @@ def _get_event_kind_from_text(text: str) -> str:
         return 'stop'
     if re.search(r'resume|pause\s*-->\s*resume', lower):
         return 'resume'
-    if re.search(r'start\s*processing|stop\s*-->\s*working|start\b', lower):
+    if re.search(r'stop\s*-->\s*working|^start\s*processing|^start$', lower):
         return 'start'
     if re.search(r'working\s*-->', lower):
         return 'start'

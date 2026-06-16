@@ -499,11 +499,9 @@ class OcrMonitorService:
 
         if current == MachineState.PAUSED:
             # İş bitti mi yoksa sadece duraklama mı?
-            has_completion_hint = any(
-                "stop" in (r.operation or '').lower() and 'nest' in (r.alarm_info or '').lower()
-                for r in rows
-            )
-            if has_completion_hint or has_stop:
+            ops = ' '.join((r.operation or '') for r in rows)
+            ops_lower = ops.lower()
+            if 'processing end' in ops_lower or 'lastworkend' in ops_lower:
                 event = ParsedEvent(
                     kind=EventKind.STOP,
                     timestamp=now,
