@@ -599,8 +599,10 @@ def _filter_noise_rows(rows: list[OcrAlarmRow]) -> list[OcrAlarmRow]:
     for row in rows:
         if not row.is_meaningful and row.alarm_info is None and row.status is None:
             continue
-        if row.alarm_info and len(row.alarm_info) <= 2 and not row.status:
-            continue
+        if row.alarm_info and not row.status:
+            text = row.alarm_info.strip()
+            if text and not any(c.isalnum() for c in text):
+                continue
         filtered.append(row)
     return filtered
 
