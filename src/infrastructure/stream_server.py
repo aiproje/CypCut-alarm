@@ -143,9 +143,11 @@ class StreamServer:
         height: int = 480,
         fps: int = 10,
         quality: int = 70,
+        hostname: str = '',
     ) -> None:
         self._host = host
         self._port = port
+        self._hostname = hostname
         self._width = width
         self._height = height
         self._fps = fps
@@ -291,9 +293,11 @@ class StreamServer:
             self._stop_event.wait(sleep_time)
 
     def get_stream_url(self, local_ip: Optional[str] = None) -> str:
-        """Stream URL'sini döndürür. Eğer local_ip verilmezse otomatik bulur."""
+        """Stream URL'sini döndürür. Eğer local_ip verilmezse ayarlardan veya otomatik bulur."""
         if local_ip:
             ip = local_ip
+        elif self._hostname:
+            ip = self._hostname
         else:
             ip = self._get_local_ip()
         return f"http://{ip}:{self._port}"

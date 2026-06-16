@@ -88,6 +88,7 @@ class AppConfig:
 
     # Stream server ayarları
     stream_enabled: bool
+    stream_host: str
     stream_port: int
     stream_width: int
     stream_height: int
@@ -153,6 +154,7 @@ class AppConfig:
                 base,
             ),
             stream_enabled=_get_env_bool("STREAM_ENABLED", True),
+            stream_host=_get_env("STREAM_HOST", "") or "",
             stream_port=_get_env_int("STREAM_PORT", 2373),
             stream_width=_get_env_int("STREAM_WIDTH", 640),
             stream_height=_get_env_int("STREAM_HEIGHT", 480),

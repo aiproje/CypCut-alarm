@@ -143,6 +143,7 @@ class MonitorService:
                 height=self._config.stream_height,
                 fps=self._config.stream_fps,
                 quality=self._config.stream_quality,
+                hostname=self._config.stream_host,
             )
 
             ok = self._stream_server.start(camera_index=camera_index)
