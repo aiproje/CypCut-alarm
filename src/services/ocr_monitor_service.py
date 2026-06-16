@@ -63,6 +63,9 @@ class OcrMonitorService:
 
         self._last_alarm_keys: set[str] = set()
         self._last_status: Optional[MachineState] = None
+        self._last_scan_time: str = ''
+        self._last_ocr_text: str = ''
+        self._last_ocr_rows: list[OcrAlarmRow] = []
 
         self._ocr_log_path = config.ocr_log_path
         self._ensure_ocr_log_dir()
@@ -71,6 +74,26 @@ class OcrMonitorService:
         self._background_notified: bool = False
         self._consecutive_failures: int = 0
         self._last_anomaly_notification_time: float = 0.0
+
+    @property
+    def last_status(self) -> Optional[MachineState]:
+        return self._last_status
+
+    @property
+    def last_scan_time(self) -> str:
+        return self._last_scan_time
+
+    @property
+    def last_ocr_text(self) -> str:
+        return self._last_ocr_text
+
+    @property
+    def last_ocr_rows(self) -> list[OcrAlarmRow]:
+        return self._last_ocr_rows
+
+    @property
+    def is_background(self) -> bool:
+        return self._background_since is not None
 
     def _ensure_ocr_log_dir(self) -> None:
         self._ocr_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,9 +261,14 @@ class OcrMonitorService:
         if ocr_text is None:
             return
 
+        self._last_scan_time = ts
+        self._last_ocr_text = ocr_text
+
         self._log_ocr_data(ts, ocr_text)
 
         rows = parse_ocr_text(ocr_text)
+        self._last_ocr_rows = rows
+
         if not rows:
             bg = self._check_background_status(False)
             if bg:
@@ -322,11 +350,13 @@ class OcrMonitorService:
             logger.info("Batch alarm cooldown aktif, atlandı.")
             return
 
+        alarm_count = len(alarm_rows)
+        header = "\U0001f6a8 Alarm Tespit Edildi" if alarm_count == 1 else f"\U0001f6a8 {alarm_count} Alarm Tespit Edildi"
         parts: list[str] = [
-            "\U0001f6a8 Alarm Tespit Edildi",
+            header,
             "",
-            f"Makine: {self._config.machine_name}",
-            f"Saat: {ts}",
+            f"    Makine: {self._config.machine_name}",
+            f"    Saat: {ts}",
             "",
         ]
 
@@ -339,25 +369,34 @@ class OcrMonitorService:
                 parts.append("")
 
             parts.append(f"\u2757 Alarm {i+1}: {code or 'Bilinmeyen Alarm'}")
+            if eid and eid != '?':
+                parts.append(f"   Kimlik: {eid}")
 
-            row_ts = row.timestamp or (_extract_error_code(
-                str(row.alarm_info or '') + str(row.status or '')
-            ) and '')
+            row_ts = row.timestamp or ''
             if row_ts:
-                parts.append(f"Alarm zamanı: {row_ts}")
+                parts.append(f"   Zaman: {row_ts}")
 
             parts.append("")
-            parts.append(desc)
+            # Açıklamayı satır satır ekle
+            for line in desc.split('\n'):
+                if line.strip():
+                    parts.append(f"   {line}")
 
-            raw_info = _translate_chinese(str(row.alarm_info or '')) or '-'
-            raw_status = _translate_chinese(str(row.status or '')) or '-'
-            if raw_info not in ('-', '') and raw_info not in desc:
-                parts.append(f"Ham metin: {raw_info}")
-            if raw_status not in ('-', '') and raw_status != raw_info and raw_status not in desc:
-                parts.append(f"Durum: {raw_status}")
+            raw_info = _translate_chinese(str(row.alarm_info or '')) or ''
+            raw_status = _translate_chinese(str(row.status or '')) or ''
+            ham_parts = []
+            if raw_info and raw_info not in desc and raw_info != code:
+                ham_parts.append(raw_info)
+            if raw_status and raw_status not in desc and raw_status not in ham_parts and raw_status != code:
+                ham_parts.append(raw_status)
+            if ham_parts:
+                parts.append(f"   Ham: {' | '.join(ham_parts)}")
 
         parts.append("")
-        parts.append("Birden fazla alarm varsa yukarıda listelenmiştir.")
+        if alarm_count > 1:
+            parts.append("Yukarıda listelenen alarmlar için gerekli önlemleri alın.")
+        else:
+            parts.append("Gerekli önlemleri alın.")
 
         message = "\n".join(parts)
         sent = self._telegram.send_message(message)
@@ -385,10 +424,12 @@ class OcrMonitorService:
         message = (
             "\u2705 Alarmlar Temizlendi\n"
             "\n"
-            f"Makine: {self._config.machine_name}\n"
-            f"Saat: {ts}\n"
+            f"    Makine: {self._config.machine_name}\n"
+            f"    Saat: {ts}\n"
             "\n"
-            "Tüm alarmlar kalktı, makine çalışmaya hazır."
+            "Tüm alarmlar kalktı, makine çalışmaya hazır.\n"
+            "\n"
+            "ℹ️ DURUM yazarak güncel durumu görebilirsiniz."
         )
         self._telegram.send_message(message)
         logger.info("Alarm temizleme bildirimi gönderildi.")
@@ -415,25 +456,44 @@ class OcrMonitorService:
         message = (
             f"{icon} {title}\n"
             "\n"
-            f"Makine: {self._config.machine_name}\n"
-            f"Saat: {ts}\n"
+            f"    Makine: {self._config.machine_name}\n"
+            f"    Saat: {ts}\n"
         )
 
-        # Aktif alarm bilgisi ekle
+        # Aktif alarm detayı
         alarm_lines = []
         for row in rows:
             if row.is_alarm_active:
-                desc = _translate_chinese(str(row.alarm_info or row.status or ''))
+                code = row.get_alarm_code() or 'Alarm'
+                desc = row.get_turkish_description()[:150]
                 eid = row.alarm_id or '?'
-                alarm_lines.append(f"  \u2022 {desc} (ID: {eid})")
+                alarm_lines.append(f"\n🚨 {code} (ID: {eid})")
+                # Açıklamanın sadece ilk satırını al
+                first_line = desc.split('\n')[0] if desc else ''
+                if first_line:
+                    alarm_lines.append(f"   {first_line}")
 
         if alarm_lines:
-            message += f"\nAktif Alarm:\n" + "\n".join(alarm_lines)
+            message += "\n" + "".join(alarm_lines)
 
-        # İş süresi bilgisi (working başlangıcı/durdurma)
-        if current == MachineState.WORKING and previous in (MachineState.IDLE, MachineState.PAUSED):
-            # Yeni başlangıç
-            pass  # süre bir sonraki duuruşta hesaplanır
+        # Temizlenen alarm var mı?
+        cleared = []
+        for row in rows:
+            if row.is_alarm_clear:
+                code = row.get_alarm_code() or ''
+                info = _translate_chinese(str(row.alarm_info or row.status or ''))[:60]
+                label = code if code else info
+                if label:
+                    cleared.append(f"\n✅ {label} temizlendi")
+
+        if cleared:
+            message += "\n" + "".join(cleared)
+
+        # Durum/operasyon detayı
+        for row in rows:
+            if row.event_kind in ('stop', 'start', 'resume') and (row.operation or row.alarm_info):
+                op = _translate_chinese(str(row.operation or row.alarm_info or ''))[:80]
+                message += f"\n   📋 {op}"
 
         sent = self._telegram.send_message(message)
         self._state_repo.save(

@@ -45,6 +45,13 @@ from ..infrastructure.repositories import (
     StateRepository,
     TransitionRepository,
 )
+from ..infrastructure.ocr_table_parser import (
+    OcrAlarmRow,
+    format_table,
+    _translate_chinese,
+    _get_event_kind_from_text,
+    _identify_alarm,
+)
 from ..infrastructure.rtf_cleaner import clean as rtf_clean
 from ..infrastructure.stream_server import StreamServer
 from ..infrastructure.telegram_client import TelegramClient
@@ -480,77 +487,151 @@ class MonitorService:
         return f"{hours} saat {minutes} dakika"
 
     def _build_status_text(self) -> str:
-        state = self._state_manager.state
-        last_event = self._state_manager.last_event
-        last_at = self._state_manager.last_event_at
+        ocr = self._ocr_monitor
 
-        cam_status = (
-            f"✅ Bağlı (Index: {self._camera.active_index})"
-            if self._camera.is_available
-            else "❌ Bağlı Değil"
-        )
+        # OCR durumu
+        ocr_state = ocr.last_status if ocr else None
+        ocr_ts = ocr.last_scan_time if ocr else ''
+        ocr_rows = ocr.last_ocr_rows if ocr else []
+        is_bg = ocr.is_background if ocr else False
 
-        stream_status = (
-            "✅ Yayın Aktif"
-            if self._stream_server is not None and self._stream_server.is_running
-            else "💤 Yayın Yok"
-        )
+        # Eski log sisteminden yedek
+        fallback_state = self._state_manager.state
+        state = ocr_state or fallback_state
 
-        last_text = last_event.text if last_event else "-"
-        last_at_text = last_at.strftime("%H:%M:%S") if last_at else "-"
-
-        # Çalışma süresi bilgisi
+        # Durum açıklaması + çalışma süresi
         work_duration = ""
         if state == MachineState.WORKING and self._work_started_at is not None:
             delta = datetime.now() - self._work_started_at
             total_seconds = int(delta.total_seconds())
             if total_seconds < 60:
-                work_duration = f"\nÇalışma süresi: {total_seconds} sn"
+                work_duration = f"\n    ⏱ {total_seconds} saniyedir çalışıyor"
             else:
                 minutes = total_seconds // 60
                 seconds = total_seconds % 60
                 if minutes < 60:
-                    work_duration = f"\nÇalışma süresi: {minutes} dk {seconds} sn"
+                    work_duration = f"\n    ⏱ {minutes} dk {seconds} sn'dir çalışıyor"
                 else:
                     hours = minutes // 60
                     minutes = minutes % 60
-                    work_duration = f"\nÇalışma süresi: {hours} sa {minutes} dk"
+                    work_duration = f"\n    ⏱ {hours} sa {minutes} dk'dır çalışıyor"
 
-        # Durum açıklaması
-        state_desc = {
-            MachineState.IDLE: "💤 Boşta",
-            MachineState.WORKING: "⚙️ Çalışıyor" + work_duration,
-            MachineState.PAUSED: "⏸️ Duraklatılmış",
-            MachineState.ALARM: "🚨 Alarm Durumunda",
+        state_icon = {
+            MachineState.IDLE: "💤",
+            MachineState.WORKING: "⚙️",
+            MachineState.PAUSED: "⏸️",
+            MachineState.ALARM: "🚨",
+        }.get(state, "❓")
+
+        state_name = {
+            MachineState.IDLE: "Boşta",
+            MachineState.WORKING: "Çalışıyor",
+            MachineState.PAUSED: "Duraklatılmış",
+            MachineState.ALARM: "Alarm Durumunda",
         }.get(state, state.value)
 
-        # Kuyruk bilgisi
-        pending = self._telegram.pending_count
-        pending_text = f"\n\nGönderilmemiş mesaj: {pending}" if pending > 0 else ""
+        # Kamera
+        cam_status = (
+            "✅ Kamera bağlı"
+            if self._camera.is_available
+            else "❌ Kamera bağlı değil"
+        )
 
-        recent_alarms = self._alarm_repo.recent(limit=5)
-        alarm_lines = []
-        for a in recent_alarms:
-            alarm_lines.append(
-                f"  • {a['occurred_at']} - {a['alarm_text'][:80]}"
-            )
-        alarms_block = "\n".join(alarm_lines) if alarm_lines else "  (yok)"
+        # Stream
+        stream_url = ""
+        if self._stream_server is not None and self._stream_server.is_running:
+            try:
+                stream_url = f"\n    🔗 {self._stream_server.get_stream_url()}"
+            except Exception:
+                pass
+            stream_text = "✅ Yayın aktif" + stream_url
+        else:
+            stream_text = "💤 Yayın yok (yayın yazıp başlatın)"
+
+        # OCR aktif mi?
+        ocr_active = "✅ Çalışıyor" if ocr and ocr._thread and ocr._thread.is_alive() else "❌ Çalışmıyor"
+
+        # CypCut arkaplan durumu
+        bg_text = "\n    ⚠️ CypCut arka planda!" if is_bg else ""
+
+        # Kuyruk
+        pending = self._telegram.pending_count
+        pending_text = f"\n\n📨 Gönderilmeyen mesaj: {pending}" if pending > 0 else ""
+
+        # OCR tablosu - son taramadaki veriler
+        table_block = ""
+        active_alarms = [r for r in ocr_rows if r.is_alarm_active]
+        clear_events = [r for r in ocr_rows if r.is_alarm_clear]
+        other_events = [r for r in ocr_rows if r.event_kind in ('stop', 'start', 'resume')]
+
+        parts = []
+        for r in active_alarms:
+            code = r.get_alarm_code() or 'Alarm'
+            desc = r.get_turkish_description()[:120]
+            eid = r.alarm_id or '?'
+            parts.append(f"    🚨 {code} (ID: {eid})")
+            parts.append(f"       {desc.split(chr(10))[0]}")
+
+        for r in clear_events:
+            code = r.get_alarm_code() or ''
+            info = _translate_chinese(str(r.alarm_info or '')) or ''
+            if code:
+                parts.append(f"    ✅ {code} temizlendi")
+            elif info:
+                parts.append(f"    ✅ {info}")
+
+        for r in other_events:
+            ek = r.event_kind
+            op = _translate_chinese(str(r.operation or r.alarm_info or ''))[:60]
+            icon = {'stop': '⏸️', 'start': '▶️', 'resume': '▶️'}.get(ek, '•')
+            parts.append(f"    {icon} {op or ek}")
+
+        if parts:
+            table_block = "\n" + "\n".join(parts)
+
+        # OCR ham metni (ilk 3 satır)
+        ocr_preview = ""
+        if ocr and ocr.last_ocr_text:
+            raw_lines = [l.strip() for l in ocr.last_ocr_text.strip().split('\n') if l.strip()]
+            header_skip = 0
+            for l in raw_lines:
+                if l.lower().strip() in ('time', 'alarminformation', 'id', 'status', 'operation'):
+                    header_skip += 1
+                else:
+                    break
+            preview_lines = raw_lines[header_skip:][:4]
+            if preview_lines:
+                ocr_preview = "\n    📄 " + "\n    📄 ".join(
+                    _translate_chinese(l)[:60] for l in preview_lines
+                )
 
         return (
             f"📊 Makine Durumu\n"
             f"\n"
-            f"Makine: {self._config.machine_name}\n"
-            f"Durum: {state_desc}\n"
-            f"Saat: {datetime.now().strftime('%H:%M:%S')}\n"
-            f"Son olay: {last_text} @ {last_at_text}\n"
+            f"╔══ {self._config.machine_name} ══╗\n"
             f"\n"
-            f"Kamera:\n"
-            f"{cam_status}\n"
-            f"Stream: {stream_status}\n"
-            f"{pending_text}\n"
+            f"  {state_icon} Durum: {state_name}"
+            f"{work_duration}"
+            f"{bg_text}"
             f"\n"
-            f"Son 5 Alarm:\n"
-            f"{alarms_block}"
+            f"  🕐 Saat: {datetime.now().strftime('%H:%M:%S')}"
+            f"\n"
+            f"  🔍 OCR: {ocr_active}"
+            f"\n"
+            f"  📡 Son tarama: {ocr_ts or '-'}"
+            f"\n"
+            f"\n"
+            f"── Donanım ──\n"
+            f"  {cam_status}\n"
+            f"  {stream_text}"
+            f"{pending_text}"
+            f"\n"
+            f"── Son OCR Verileri ──"
+            f"{ocr_preview}"
+            f"{table_block if not ocr_preview else ''}"
+            f"\n"
+            f"\n"
+            f"ℹ️ Komutlar: FOTO, VIDEO, EKRAN, YAYIN, DURUM"
         )
 
 
