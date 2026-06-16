@@ -483,14 +483,24 @@ class OcrMonitorService:
                 icon = "\u2705"
                 title = "Alarm Çözüldü, Çalışıyor"
             elif has_resume or previous == MachineState.PAUSED:
-                event = ParsedEvent(
-                    kind=EventKind.RESUME,
-                    timestamp=now,
-                    text="OCR: Makine devam ediyor",
-                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
-                )
-                icon = "\u25b6\ufe0f"
-                title = "Devam Ediyor"
+                if has_start:
+                    event = ParsedEvent(
+                        kind=EventKind.START,
+                        timestamp=now,
+                        text="OCR: Çalışma başladı",
+                        raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                    )
+                    icon = "\u25b6\ufe0f"
+                    title = "Çalışma Başladı"
+                else:
+                    event = ParsedEvent(
+                        kind=EventKind.RESUME,
+                        timestamp=now,
+                        text="OCR: Makine devam ediyor",
+                        raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                    )
+                    icon = "\u25b6\ufe0f"
+                    title = "Devam Ediyor"
             else:
                 event = ParsedEvent(
                     kind=EventKind.START,
