@@ -201,14 +201,16 @@ def _get_event_kind_from_text(text: str) -> str:
         return 'alarm_clear'
     if re.search(r'alarm', lower):
         return 'alarm'
-    if re.search(r'working\s*-->\s*pause|working-->pause|-->pause', lower):
+    if re.search(r'working\s*-->\s*pause|-->\s*pause', lower):
         return 'stop'
     if re.search(r'resume|pause\s*-->\s*resume', lower):
         return 'resume'
-    if re.search(r'start\s*processing|stop\s*-->\s*working|start\b', lower, re.IGNORECASE):
+    if re.search(r'start\s*processing|stop\s*-->\s*working|start\b', lower):
         return 'start'
-    if re.search(r'working-->', lower):
+    if re.search(r'working\s*-->', lower):
         return 'start'
+    if re.search(r'processing\s*end|lastworkend|go\s*dock\s*-->\s*stop', lower):
+        return 'stop'
     return 'info'
 
 
@@ -233,7 +235,7 @@ class OcrAlarmRow:
             return False
         combined = ((self.alarm_info or '') + ' ' + (self.status or '') + ' ' + (self.operation or '')).lower()
         ek = _get_event_kind_from_text(combined)
-        if ek == 'alarm_clear':
+        if ek in ('alarm_clear', 'stop', 'start', 'resume'):
             return False
         if ek == 'alarm':
             return True
@@ -363,15 +365,32 @@ def _has_any_alarm_keyword(text: str) -> bool:
     return any(kw in lower for kw in _ALARM_KEYWORDS)
 
 
+def _extract_leading_timestamp(text: str) -> tuple[str, str]:
+    """Metnin başındaki timestamp'i ayırır. (kalan_metin, timestamp) döndürür.
+    
+    Şu formatları tanır:
+      (06/16 13:58:15)Metin    -> ('Metin', '06/16 13:58:15')
+      06/16 13:58:15)Metin     -> ('Metin', '06/16 13:58:15')
+      06/16 13:58:15 Metin     -> ('Metin', '06/16 13:58:15')
+    """
+    m = re.match(r'\(?(\d{2}/\d{1,2}\s+\d{1,2}:\d{2}:\d{2})\)?\s*(.*)', text.strip())
+    if m:
+        return m.group(2).strip(), m.group(1)
+    return text, ''
+
+
 def _has_operation_pattern(text: str) -> bool:
     lower = text.lower()
+    # Regex ile boşluk toleranslı ok işareti kontrolü
+    if re.search(r'working\s*-->|-->(\s*working|\s*pause|\s*stop)', lower):
+        return True
+    if re.search(r'frame\s*-->|-->\s*frame', lower):
+        return True
     patterns = [
-        "working-->", "-->working", "--> working",
-        "-->pause", "--> pause", "-->stop", "--> stop",
-        "frame-->", "-->frame",
         "go dock", "dock-->", "laser enable",
         "red light", "nest completed", "rebuilding model",
         "edge searching",
+        "processing end", "lastworkend",
     ]
     if any(p in lower for p in patterns):
         return True
@@ -413,33 +432,51 @@ def parse_ocr_text(raw_text: str) -> list[OcrAlarmRow]:
 
     logger.info("OCR parse: %d başlık atlandı, %d satır", data_start, len(data_lines))
 
-    timestamp_indices = [
-        i for i, line in enumerate(data_lines)
-        if _is_timestamp(line) or _is_short_timestamp(line)
-    ]
+    # Satır başındaki timestamp'leri ayır, her satırı content+ts çiftine dönüştür
+    parsed_pairs: list[tuple[str, str]] = []  # (content, timestamp)
+    for line in data_lines:
+        content, ts = _extract_leading_timestamp(line)
+        if not ts:
+            # Klasik timestamp kontrolü (tam satır timestamp ise timestamp olarak kaydet)
+            if _is_timestamp(line) or _is_short_timestamp(line):
+                parsed_pairs.append(('', line))
+            else:
+                parsed_pairs.append((line, ''))
+        else:
+            parsed_pairs.append((content, ts))
 
+    # Boş content'leri filtrele (sadece timestamp olan satırlar)
+    filtered_pairs = [(c, t) for c, t in parsed_pairs if c]
+
+    if not filtered_pairs:
+        return []
+
+    # Gruplama: içinde timestamp SATIRI olmayan ardışık content'leri birleştir
     rows: list[OcrAlarmRow] = []
+    current_batch: list[str] = []
+    current_ts: str = ''
 
-    if timestamp_indices:
-        for idx, ts_pos in enumerate(timestamp_indices):
-            start = ts_pos
-            end = timestamp_indices[idx + 1] if idx + 1 < len(timestamp_indices) else len(data_lines)
-            row = _build_row(data_lines[start:end])
-            if row is not None:
-                rows.append(row)
-    else:
-        current: list[str] = []
-        for line in data_lines:
-            current.append(line)
-            if len(current) >= 2 and (_is_short_timestamp(line) or _contains_cypcut_timestamp(line)):
-                row = _build_row(current)
+    for content, ts in filtered_pairs:
+        if ts:
+            # Timestamp'i olan satır: yeni grup başlat
+            if current_batch:
+                row = _build_row(current_batch)
                 if row is not None:
+                    if not row.timestamp and current_ts:
+                        row.timestamp = current_ts
                     rows.append(row)
-                current = []
-        if current:
-            row = _build_row(current)
-            if row is not None:
-                rows.append(row)
+            current_batch = [content]
+            current_ts = ts
+        else:
+            # Timestamp'siz satır: mevcut gruba ekle
+            current_batch.append(content)
+
+    if current_batch:
+        row = _build_row(current_batch)
+        if row is not None:
+            if not row.timestamp and current_ts:
+                row.timestamp = current_ts
+            rows.append(row)
 
     rows = _merge_similar_rows(rows)
     rows = _filter_noise_rows(rows)
@@ -462,6 +499,15 @@ def _build_row(fields: list[str]) -> Optional[OcrAlarmRow]:
         f = field.strip()
         if not f:
             continue
+
+        # Baştaki timestamp'i ayır
+        content, ts = _extract_leading_timestamp(f)
+        if ts and timestamp is None:
+            timestamp = ts
+        if not content:
+            continue
+        if ts:
+            f = content
 
         if _is_timestamp(f) or _is_short_timestamp(f):
             timestamp = f
@@ -497,15 +543,6 @@ def _build_row(fields: list[str]) -> Optional[OcrAlarmRow]:
     if timestamp is None and alarm_info is None and alarm_id is None:
         if not (operation and _get_event_kind_from_text(operation) != 'info'):
             return None
-
-    # İç içe timestamp varsa (örn: "(06/16 09:13:16)Working-->Pause") çıkar
-    if timestamp is None:
-        for text in (operation, alarm_info, status):
-            if text and _contains_cypcut_timestamp(text):
-                m = _TIMESTAMP_INSIDE_RE.search(text)
-                if m:
-                    timestamp = m.group(0)
-                    break
 
     cn_text = str(alarm_info or '') + str(status or '') + str(operation or '')
     # Çince oranı yüksekse ama içinde tanınan alarm pattern'i varsa filtreleme

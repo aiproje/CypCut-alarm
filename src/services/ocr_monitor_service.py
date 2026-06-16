@@ -309,8 +309,13 @@ class OcrMonitorService:
 
         previous_state = self._last_status or self._state_manager.state
 
+        has_stop = any(r.event_kind == 'stop' for r in rows)
+        has_start = any(r.event_kind in ('start', 'resume') for r in rows)
+
         if active_alarms:
             new_state = MachineState.ALARM
+        elif has_stop and not has_start:
+            new_state = MachineState.PAUSED
         elif rows:
             new_state = MachineState.WORKING
         else:
@@ -402,12 +407,9 @@ class OcrMonitorService:
             return
 
         result = self._state_manager.process(event)
-        if not result.changed:
-            return
 
         message = f"{icon} {title}\n\n    {self._config.machine_name}\n    {ts}"
 
-        # Alarm veya clear varsa ekle
         for row in rows:
             if row.is_alarm_active:
                 code = row.get_alarm_code() or 'Alarm'
