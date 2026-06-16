@@ -408,23 +408,28 @@ class OcrMonitorService:
 
         result = self._state_manager.process(event)
 
-        message = f"{icon} {title}\n\n    {self._config.machine_name}\n    {ts}"
+        # ALARM durumuna geçişte batch alarm bildirimi zaten gönderildiği için
+        # burada ayrıca mesaj göndermiyoruz.
+        send_message = current != MachineState.ALARM
 
-        for row in rows:
-            if row.is_alarm_active:
-                code = row.get_alarm_code() or 'Alarm'
-                eid = row.alarm_id or '?'
-                first_line = row.get_turkish_description().split('\n')[0]
-                message += f"\n\n{code}"
-                if first_line:
-                    message += f"\n{first_line}"
-                message += f"\nID: {eid}"
-            elif row.event_kind in ('stop', 'start', 'resume') and (row.operation or row.alarm_info):
-                op = _translate_chinese(str(row.operation or row.alarm_info or ''))[:80]
-                if op not in message:
-                    message += f"\n{op}"
+        if send_message:
+            message = f"{icon} {title}\n\n    {self._config.machine_name}\n    {ts}"
 
-        sent = self._telegram.send_message(message)
+            for row in rows:
+                if row.is_alarm_active:
+                    code = row.get_alarm_code() or 'Alarm'
+                    eid = row.alarm_id or '?'
+                    first_line = row.get_turkish_description().split('\n')[0]
+                    message += f"\n\n{code}"
+                    if first_line:
+                        message += f"\n{first_line}"
+                    message += f"\nID: {eid}"
+                elif row.event_kind in ('stop', 'start', 'resume') and (row.operation or row.alarm_info):
+                    op = _translate_chinese(str(row.operation or row.alarm_info or ''))[:80]
+                    if op not in message:
+                        message += f"\n{op}"
+
+        sent = self._telegram.send_message(message) if send_message else False
         self._state_repo.save(
             state=current,
             last_event_text=event.text,
