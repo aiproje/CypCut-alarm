@@ -306,7 +306,6 @@ class OcrMonitorService:
                 other_events.append(row)
 
         new_alarms = current_alarm_keys - self._last_alarm_keys
-        cleared = self._last_alarm_keys - current_alarm_keys
 
         previous_state = self._last_status or self._state_manager.state
 
@@ -317,16 +316,12 @@ class OcrMonitorService:
         else:
             new_state = MachineState.IDLE
 
-        # Yeni alarmlar varsa TEK mesajda birleştir
+        # Yeni alarm varsa bildirim gönder
         if new_alarms and active_alarms:
             new_active = [r for r in active_alarms if self._make_alarm_key(r) in new_alarms]
             self._on_new_alarms_batch(new_active, ts)
 
-        # Alarm temizlenmiş mi?
-        if cleared_alarms_list and not active_alarms:
-            self._on_all_alarms_cleared(ts)
-
-        # Durum değişikliği
+        # Durum değişikliği bildirimi
         if new_state != previous_state:
             self._on_state_change(previous_state, new_state, rows, ts)
 
@@ -350,53 +345,27 @@ class OcrMonitorService:
             logger.info("Batch alarm cooldown aktif, atlandı.")
             return
 
-        alarm_count = len(alarm_rows)
-        header = "\U0001f6a8 Alarm Tespit Edildi" if alarm_count == 1 else f"\U0001f6a8 {alarm_count} Alarm Tespit Edildi"
-        parts: list[str] = [
-            header,
-            "",
-            f"    Makine: {self._config.machine_name}",
-            f"    Saat: {ts}",
-            "",
-        ]
+        n = len(alarm_rows)
+        header = "\U0001f6a8 Alarm" if n == 1 else f"\U0001f6a8 {n} Alarm"
+
+        parts = [header, "", f"    {self._config.machine_name}", f"    {ts}", ""]
 
         for i, row in enumerate(alarm_rows):
-            code = row.get_alarm_code()
-            eid = row.alarm_id or _extract_error_code(str(row.alarm_info or '') + str(row.status or '')) or '?'
-            desc = row.get_turkish_description()
+            code = row.get_alarm_code() or 'Bilinmeyen Alarm'
+            eid = row.alarm_id or _extract_error_code(
+                str(row.alarm_info or '') + str(row.status or '')
+            ) or ''
 
             if i > 0:
                 parts.append("")
 
-            parts.append(f"\u2757 Alarm {i+1}: {code or 'Bilinmeyen Alarm'}")
-            if eid and eid != '?':
-                parts.append(f"   Kimlik: {eid}")
-
-            row_ts = row.timestamp or ''
-            if row_ts:
-                parts.append(f"   Zaman: {row_ts}")
-
-            parts.append("")
-            # Açıklamayı satır satır ekle
-            for line in desc.split('\n'):
+            num = f"{i+1}. " if n > 1 else ""
+            parts.append(f"{num}{code}")
+            for line in row.get_turkish_description().split('\n'):
                 if line.strip():
                     parts.append(f"   {line}")
-
-            raw_info = _translate_chinese(str(row.alarm_info or '')) or ''
-            raw_status = _translate_chinese(str(row.status or '')) or ''
-            ham_parts = []
-            if raw_info and raw_info not in desc and raw_info != code:
-                ham_parts.append(raw_info)
-            if raw_status and raw_status not in desc and raw_status not in ham_parts and raw_status != code:
-                ham_parts.append(raw_status)
-            if ham_parts:
-                parts.append(f"   Ham: {' | '.join(ham_parts)}")
-
-        parts.append("")
-        if alarm_count > 1:
-            parts.append("Yukarıda listelenen alarmlar için gerekli önlemleri alın.")
-        else:
-            parts.append("Gerekli önlemleri alın.")
+            if eid:
+                parts.append(f"   ID: {eid}")
 
         message = "\n".join(parts)
         sent = self._telegram.send_message(message)
@@ -404,10 +373,7 @@ class OcrMonitorService:
         self._cooldown_repo.set_last_sent(cooldown_key, now)
 
         for row in alarm_rows:
-            alarm_text = (
-                f"{row.alarm_info or '?'} "
-                f"(ID: {row.alarm_id or '?'}, Durum: {row.status or '?'})"
-            )
+            alarm_text = f"{row.alarm_info or '?'} (ID: {row.alarm_id or '?'})"
             self._alarm_repo.insert(
                 alarm_text=alarm_text,
                 raw_line=f"OCR:{row.to_dict()}",
@@ -416,23 +382,9 @@ class OcrMonitorService:
             )
 
         if sent:
-            logger.info("Batch alarm bildirimi gönderildi (%d alarm)", len(alarm_rows))
+            logger.info("Alarm bildirimi gönderildi (%d alarm)", len(alarm_rows))
         else:
-            logger.warning("Batch alarm bildirimi GÖNDERİLEMEDİ (%d alarm)", len(alarm_rows))
-
-    def _on_all_alarms_cleared(self, ts: str) -> None:
-        message = (
-            "\u2705 Alarmlar Temizlendi\n"
-            "\n"
-            f"    Makine: {self._config.machine_name}\n"
-            f"    Saat: {ts}\n"
-            "\n"
-            "Tüm alarmlar kalktı, makine çalışmaya hazır.\n"
-            "\n"
-            "ℹ️ DURUM yazarak güncel durumu görebilirsiniz."
-        )
-        self._telegram.send_message(message)
-        logger.info("Alarm temizleme bildirimi gönderildi.")
+            logger.warning("Alarm bildirimi GÖNDERİLEMEDİ (%d alarm)", len(alarm_rows))
 
     # ------------------------------------------------------------------
     # Durum değişikliği
@@ -453,47 +405,22 @@ class OcrMonitorService:
         if not result.changed:
             return
 
-        message = (
-            f"{icon} {title}\n"
-            "\n"
-            f"    Makine: {self._config.machine_name}\n"
-            f"    Saat: {ts}\n"
-        )
+        message = f"{icon} {title}\n\n    {self._config.machine_name}\n    {ts}"
 
-        # Aktif alarm detayı
-        alarm_lines = []
+        # Alarm veya clear varsa ekle
         for row in rows:
             if row.is_alarm_active:
                 code = row.get_alarm_code() or 'Alarm'
-                desc = row.get_turkish_description()[:150]
                 eid = row.alarm_id or '?'
-                alarm_lines.append(f"\n🚨 {code} (ID: {eid})")
-                # Açıklamanın sadece ilk satırını al
-                first_line = desc.split('\n')[0] if desc else ''
+                first_line = row.get_turkish_description().split('\n')[0]
+                message += f"\n\n{code}"
                 if first_line:
-                    alarm_lines.append(f"   {first_line}")
-
-        if alarm_lines:
-            message += "\n" + "".join(alarm_lines)
-
-        # Temizlenen alarm var mı?
-        cleared = []
-        for row in rows:
-            if row.is_alarm_clear:
-                code = row.get_alarm_code() or ''
-                info = _translate_chinese(str(row.alarm_info or row.status or ''))[:60]
-                label = code if code else info
-                if label:
-                    cleared.append(f"\n✅ {label} temizlendi")
-
-        if cleared:
-            message += "\n" + "".join(cleared)
-
-        # Durum/operasyon detayı
-        for row in rows:
-            if row.event_kind in ('stop', 'start', 'resume') and (row.operation or row.alarm_info):
+                    message += f"\n{first_line}"
+                message += f"\nID: {eid}"
+            elif row.event_kind in ('stop', 'start', 'resume') and (row.operation or row.alarm_info):
                 op = _translate_chinese(str(row.operation or row.alarm_info or ''))[:80]
-                message += f"\n   📋 {op}"
+                if op not in message:
+                    message += f"\n{op}"
 
         sent = self._telegram.send_message(message)
         self._state_repo.save(
