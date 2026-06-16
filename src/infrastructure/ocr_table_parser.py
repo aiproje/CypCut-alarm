@@ -366,8 +366,9 @@ def _has_any_alarm_keyword(text: str) -> bool:
 def _has_operation_pattern(text: str) -> bool:
     lower = text.lower()
     patterns = [
-        "working-->", "-->working", "-->pause",
-        "-->stop", "frame-->", "-->frame",
+        "working-->", "-->working", "--> working",
+        "-->pause", "--> pause", "-->stop", "--> stop",
+        "frame-->", "-->frame",
         "go dock", "dock-->", "laser enable",
         "red light", "nest completed", "rebuilding model",
         "edge searching",
@@ -494,7 +495,17 @@ def _build_row(fields: list[str]) -> Optional[OcrAlarmRow]:
                 operation = f
 
     if timestamp is None and alarm_info is None and alarm_id is None:
-        return None
+        if not (operation and _get_event_kind_from_text(operation) != 'info'):
+            return None
+
+    # İç içe timestamp varsa (örn: "(06/16 09:13:16)Working-->Pause") çıkar
+    if timestamp is None:
+        for text in (operation, alarm_info, status):
+            if text and _contains_cypcut_timestamp(text):
+                m = _TIMESTAMP_INSIDE_RE.search(text)
+                if m:
+                    timestamp = m.group(0)
+                    break
 
     cn_text = str(alarm_info or '') + str(status or '') + str(operation or '')
     # Çince oranı yüksekse ama içinde tanınan alarm pattern'i varsa filtreleme
