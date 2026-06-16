@@ -81,6 +81,7 @@ class TelegramClient:
         self._screen_capture_provider: Optional[Callable[[], Optional[Path]]] = None
         self._ocr_provider: Optional[Callable[[Path], Optional[str]]] = None
         self._ocr_crop_provider: Optional[Callable[[Path], Path]] = None
+        self._stream_provider: Optional[Callable[[], Optional[str]]] = None
 
         # Retry kuyruğu
         self._pending: deque[_PendingMessage] = deque()
@@ -130,6 +131,9 @@ class TelegramClient:
 
     def set_ocr_crop_provider(self, provider: Callable[[Path], Path]) -> None:
         self._ocr_crop_provider = provider
+
+    def set_stream_provider(self, provider: Callable[[], Optional[str]]) -> None:
+        self._stream_provider = provider
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -303,6 +307,8 @@ class TelegramClient:
             self._handle_ekran()
         elif command == "EKRAN_OCR":
             self._handle_ekran_ocr()
+        elif command in ("YAYIN", "YAYıN", "STREAM"):
+            self._handle_yayin()
         else:
             logger.debug("Bilinmeyen komut yoksayıldı: %s", command)
 
@@ -436,6 +442,34 @@ class TelegramClient:
             self.send_message("🔍 OCR Sonucu\n\n" + ocr_text)
 
         self._cleanup_ocr_files(photo_path, cropped_path)
+
+    def _handle_yayin(self) -> None:
+        if self._stream_provider is None:
+            self.send_message("Yayın özelliği yapılandırılmamış.")
+            return
+        try:
+            result = self._stream_provider()
+        except Exception as exc:
+            logger.exception("YAYIN sağlayıcı hatası: %s", exc)
+            self.send_message("Yayın hatası: %s" % exc)
+            return
+
+        if result is None:
+            # Stream durduruldu
+            self.send_message("📹 Yayın durduruldu.")
+        elif result == "":
+            # Hata
+            self.send_message("❌ Yayın başlatılamadı.")
+        else:
+            # Yayın başladı, URL'yi gönder
+            self.send_message(
+                "📹 Yayın Başladı\n"
+                "\n"
+                f"Bağlantı:\n"
+                f"{result}\n"
+                "\n"
+                "Tekrar \"yayın\" yazarak durdurabilirsiniz."
+            )
 
     def _cleanup_ocr_files(self, original: Path, cropped: Path) -> None:
         """OCR işleminden sonra geçici dosyaları temizler."""

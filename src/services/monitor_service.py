@@ -46,6 +46,7 @@ from ..infrastructure.repositories import (
     TransitionRepository,
 )
 from ..infrastructure.rtf_cleaner import clean as rtf_clean
+from ..infrastructure.stream_server import StreamServer
 from ..infrastructure.telegram_client import TelegramClient
 from ..logging_setup import get_logger
 from .ocr_monitor_service import OcrMonitorService
@@ -94,6 +95,10 @@ class MonitorService:
         self._telegram.set_screen_capture_provider(self._screen_capture.capture)
         self._telegram.set_ocr_provider(self._ocr_service.recognize)
         self._telegram.set_ocr_crop_provider(self._ocr_service.crop_image)
+        self._telegram.set_stream_provider(self._handle_stream_command)
+
+        # Stream sunucusu
+        self._stream_server: Optional[StreamServer] = None
 
         self._tail: Optional[LogTailReader] = None
         self._watcher: Optional[LogDirectoryWatcher] = None
@@ -107,9 +112,57 @@ class MonitorService:
         # Çalışma başlangıç zamanı (süre hesaplamak için)
         self._work_started_at: Optional[datetime] = None
 
+        # Stream koruyucu kilit
+        self._stream_lock = threading.Lock()
+
     def request_stop(self, *_: object) -> None:
         logger.info("Durdurma sinyali alındı.")
         self._stop_event.set()
+
+    def _handle_stream_command(self) -> Optional[str]:
+        with self._stream_lock:
+            if self._stream_server is not None:
+                self._stream_server.stop()
+                self._stream_server = None
+                logger.info("Stream sunucusu durduruldu (komut ile).")
+                return None
+
+            if not self._config.stream_enabled:
+                logger.warning("Stream özelliği devre dışı.")
+                return ""
+
+            if not self._camera.is_available:
+                logger.warning("Kamera yok, stream başlatılamaz.")
+                return ""
+
+            camera_index = self._camera.active_index or 0
+            self._stream_server = StreamServer(
+                host='0.0.0.0',
+                port=self._config.stream_port,
+                width=self._config.stream_width,
+                height=self._config.stream_height,
+                fps=self._config.stream_fps,
+                quality=self._config.stream_quality,
+            )
+
+            ok = self._stream_server.start(camera_index=camera_index)
+            if not ok:
+                self._stream_server = None
+                return ""
+
+            url = self._stream_server.get_stream_url()
+            logger.info("Stream sunucusu başlatıldı: %s", url)
+            return url
+
+        return ""
+
+    def _stop_stream_if_running(self) -> None:
+        if self._stream_server is not None:
+            try:
+                self._stream_server.stop()
+            except Exception:
+                pass
+            self._stream_server = None
 
     def run(self) -> None:
         """Servisi başlatır ve ana thread'i bloke eder."""
@@ -172,6 +225,7 @@ class MonitorService:
             self._tail.stop()
         if self._telegram is not None:
             self._telegram.stop()
+        self._stop_stream_if_running()
         self._camera.close()
         logger.info("Servis durduruldu.")
 
@@ -435,6 +489,12 @@ class MonitorService:
             else "❌ Bağlı Değil"
         )
 
+        stream_status = (
+            "✅ Yayın Aktif"
+            if self._stream_server is not None and self._stream_server.is_running
+            else "💤 Yayın Yok"
+        )
+
         last_text = last_event.text if last_event else "-"
         last_at_text = last_at.strftime("%H:%M:%S") if last_at else "-"
 
@@ -485,6 +545,7 @@ class MonitorService:
             f"\n"
             f"Kamera:\n"
             f"{cam_status}\n"
+            f"Stream: {stream_status}\n"
             f"{pending_text}\n"
             f"\n"
             f"Son 5 Alarm:\n"

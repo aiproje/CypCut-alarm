@@ -270,13 +270,29 @@ class ScreenCapture:
                     title = win32gui.GetWindowText(hwnd)
                 except Exception:
                     pass
-                logger.info("CypCut penceresi bulundu (HWND: %s, başlık: %s)", hwnd, title)
+
+                try:
+                    import win32gui
+                    minimized = win32gui.IsIconic(hwnd)
+                except Exception:
+                    minimized = False
+
+                logger.info("CypCut penceresi bulundu (HWND: %s, başlık: '%s', minimize: %s)",
+                            hwnd, title, minimized)
+
+                if minimized:
+                    logger.warning("CypCut minimize edilmiş, ekran görüntüsü alınamaz.")
+                    return None
+
                 result = _capture_window(hwnd)
                 if result is not None:
                     return result
-                logger.warning("Pencere görüntülenemed tam ekran alınıyor.")
 
-            return _capture_full_screen()
+                logger.warning("Pencere görüntülenemedi.")
+                return None
+
+            logger.info("CypCut penceresi bulunamadı, ekran görüntüsü alınmıyor.")
+            return None
 
 
 __all__ = ["ScreenCapture"]

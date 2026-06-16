@@ -1,10 +1,3 @@
-"""OCR tabanlı makine durumu izleme servisi.
-
-Her N saniyede bir ekran görüntüsü alır, OCR ile alarm tablosunu okur,
-durum değişikliklerini tespit eder ve Telegram'a bildirim gönderir.
-
-Log dosyası okuma yerine ekran OCR'ı kullanır.
-"""
 from __future__ import annotations
 
 import threading
@@ -18,7 +11,15 @@ from ..domain.enums import EventKind, MachineState
 from ..domain.events import ParsedEvent
 from ..domain.machine_state import MachineStateManager
 from ..infrastructure.ocr_service import OcrService
-from ..infrastructure.ocr_table_parser import OcrAlarmRow, format_table, parse_ocr_text
+from ..infrastructure.ocr_table_parser import (
+    OcrAlarmRow,
+    format_table,
+    parse_ocr_text,
+    _translate_chinese,
+    _identify_alarm,
+    _get_event_kind_from_text,
+    _extract_error_code,
+)
 from ..infrastructure.repositories import (
     AlarmRepository,
     CooldownRepository,
@@ -31,19 +32,10 @@ from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
 
+_CHINESE_PATTERN = __import__('re').compile(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]')
+
 
 class OcrMonitorService:
-    """OCR ile ekran izleyerek makine durumunu takip eden servis.
-
-    Akış:
-      1. Ekran görüntüsü al
-      2. Görüntüyü kırp (alarm tablosu alanı)
-      3. OCR ile metin çıkar
-      4. OCR çıktısını tablo satırlarına ayrıştır
-      5. Önceki durumla karşılaştır, değişiklik varsa bildirim gönder
-      6. Tüm OCR verilerini txt dosyasına logla
-    """
-
     def __init__(
         self,
         config: AppConfig,
@@ -69,20 +61,21 @@ class OcrMonitorService:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-        # Önceki tarama sonucu (değişiklik tespiti için)
         self._last_alarm_keys: set[str] = set()
         self._last_status: Optional[MachineState] = None
 
-        # OCR log dosyası
         self._ocr_log_path = config.ocr_log_path
         self._ensure_ocr_log_dir()
 
+        self._background_since: Optional[float] = None
+        self._background_notified: bool = False
+        self._consecutive_failures: int = 0
+        self._last_anomaly_notification_time: float = 0.0
+
     def _ensure_ocr_log_dir(self) -> None:
-        """OCR log dizinini oluşturur."""
         self._ocr_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
-        """OCR izleme döngüsünü başlatır."""
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
@@ -93,20 +86,125 @@ class OcrMonitorService:
         )
         self._thread.start()
         logger.info(
-            "OCR izleme başlatıldı (aralık: %.1fs, log: %s)",
-            self._config.ocr_monitor_interval,
-            self._ocr_log_path,
+            "OCR izleme başlatıldı (aralık: %.1fs)", self._config.ocr_monitor_interval,
         )
 
     def stop(self) -> None:
-        """OCR izleme döngüsünü durdurur."""
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=3.0)
         logger.info("OCR izleme durduruldu.")
 
+    # ------------------------------------------------------------------
+    # Arkaplan / Pencere kontrolü
+    # ------------------------------------------------------------------
+
+    def _is_cypcut_window_visible(self) -> bool:
+        try:
+            import win32gui
+            hwnd = self._find_window()
+            if hwnd is None:
+                return False
+            if win32gui.IsIconic(hwnd):
+                return False
+            if not win32gui.IsWindowVisible(hwnd):
+                return False
+            return True
+        except Exception:
+            return True
+
+    def _find_window(self) -> Optional[int]:
+        try:
+            import win32gui
+        except ImportError:
+            return None
+        found_hwnd: Optional[int] = None
+
+        def _enum_cb(hwnd: int, _: object) -> bool:
+            nonlocal found_hwnd
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            title = win32gui.GetWindowText(hwnd)
+            if not title:
+                return True
+            try:
+                cls = win32gui.GetClassName(hwnd)
+            except Exception:
+                cls = "?"
+            is_cp = "\u6fc0\u5149" in title or "CypCut" in title or "cypcut" in cls.lower()
+            if is_cp:
+                skips = ["Edge", "Chrome", "Firefox", "Visual Studio", "Notepad",
+                         "VS Code", "Sublime", "GitHub", "Explorer", "cmd",
+                         "Terminal", "PowerShell", "python", "Stack"]
+                for sw in skips:
+                    if sw.lower() in title.lower():
+                        return True
+                found_hwnd = hwnd
+                return False
+            return True
+
+        try:
+            win32gui.EnumWindows(_enum_cb, None)
+        except Exception:
+            pass
+        return found_hwnd
+
+    def _check_background_status(self, ok: bool) -> Optional[str]:
+        visible = self._is_cypcut_window_visible()
+        now = time.monotonic()
+
+        if not visible:
+            if self._background_since is None:
+                self._background_since = now
+                self._consecutive_failures = 0
+                return None
+            elapsed = now - self._background_since
+            thr = self._config.background_long_threshold_seconds
+            if elapsed >= thr and not self._background_notified:
+                self._background_notified = True
+                mins = int(elapsed // 60)
+                return (
+                    f"\u26a0\ufe0f CypCut Arkaplanda\n"
+                    f"\n"
+                    f"Makine: {self._config.machine_name}\n"
+                    f"Pencere {mins} dakikadır arkaplanda/minimize.\n"
+                    f"OCR izleme duraklatıldı.\n"
+                    f"\n"
+                    f"Pencereyi öne getirdiğinizde izleme devam eder."
+                )
+            return None
+
+        if self._background_since is not None:
+            self._background_since = None
+            self._background_notified = False
+            self._consecutive_failures = 0
+            return (
+                f"\u2705 CypCut Önde\n"
+                f"\n"
+                f"Makine: {self._config.machine_name}\n"
+                f"Pencere tekrar görünür. OCR izleme devam ediyor."
+            )
+
+        if not ok:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 6 and (now - self._last_anomaly_notification_time) > 300:
+                self._last_anomaly_notification_time = now
+                return (
+                    f"\u26a0\ufe0f OCR Uyar\u0131s\u0131\n"
+                    f"\n"
+                    f"Makine: {self._config.machine_name}\n"
+                    f"Son {self._consecutive_failures} tarama anlams\u0131z sonu\u00e7 verdi.\n"
+                    f"CypCut arkaplanda veya ekran kapal\u0131 olabilir."
+                )
+        else:
+            self._consecutive_failures = 0
+        return None
+
+    # ------------------------------------------------------------------
+    # Ana döngü
+    # ------------------------------------------------------------------
+
     def _monitor_loop(self) -> None:
-        """Ana izleme döngüsü: periyodik olarak OCR taraması yapar."""
         logger.info("OCR izleme döngüsü başladı.")
         while not self._stop_event.is_set():
             try:
@@ -117,141 +215,187 @@ class OcrMonitorService:
         logger.info("OCR izleme döngüsü durduruldu.")
 
     def _scan_once(self) -> None:
-        """Tek bir tarama: ekran görüntüsü al, OCR yap, değerlendir."""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1) Ekran görüntüsü al
         if not self._screen.is_available:
-            logger.warning("Ekran görüntüsü alınamıyor, atlanıyor.")
             return
 
-        screenshot_path = self._screen.capture()
-        if screenshot_path is None:
-            logger.warning("Ekran görüntüsü alınamadı.")
+        path = self._screen.capture()
+        if path is None:
             return
 
-        # 2) OCR yap (kırp + tanıma)
         try:
-            ocr_text = self._ocr.recognize(screenshot_path)
+            ocr_text = self._ocr.recognize(path)
         except Exception as exc:
             logger.exception("OCR hatası: %s", exc)
             ocr_text = None
         finally:
-            # Geçici ekran görüntüsünü temizle
             try:
-                screenshot_path.unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             except OSError:
                 pass
 
         if ocr_text is None:
-            logger.warning("OCR sonucu alınamadı.")
             return
 
-        # 3) OCR verilerini logla (ham metin)
         self._log_ocr_data(ts, ocr_text)
 
-        # 4) OCR çıktısını ayrıştır
         rows = parse_ocr_text(ocr_text)
         if not rows:
-            logger.info("OCR tabloda veri bulunamadı.")
+            bg = self._check_background_status(False)
+            if bg:
+                self._telegram.send_message(bg)
             return
 
-        logger.info("OCR tablosu:\n%s", format_table(rows))
+        has = any(r.is_meaningful for r in rows)
+        bg = self._check_background_status(has)
+        if bg:
+            self._telegram.send_message(bg)
+            if self._background_since is not None:
+                return
 
-        # 5) Durum değişikliğini değerlendir
         self._evaluate_state(rows, ts)
 
+    # ------------------------------------------------------------------
+    # Durum değerlendirme
+    # ------------------------------------------------------------------
+
     def _evaluate_state(self, rows: list[OcrAlarmRow], ts: str) -> None:
-        """OCR satırlarına göre durum değişikliğini değerlendirir."""
         current_alarm_keys: set[str] = set()
         active_alarms: list[OcrAlarmRow] = []
+        cleared_alarms_list: list[OcrAlarmRow] = []
+        other_events: list[OcrAlarmRow] = []
 
         for row in rows:
-            if row.is_alarm_active:
+            ek = row.event_kind
+            if ek == 'alarm':
                 key = self._make_alarm_key(row)
                 current_alarm_keys.add(key)
                 active_alarms.append(row)
+            elif ek == 'alarm_clear':
+                cleared_alarms_list.append(row)
+            elif ek in ('stop', 'start', 'resume'):
+                other_events.append(row)
 
-        # Yeni alarm var mı?
         new_alarms = current_alarm_keys - self._last_alarm_keys
-        cleared_alarms = self._last_alarm_keys - current_alarm_keys
+        cleared = self._last_alarm_keys - current_alarm_keys
 
-        # Durum belirleme
+        previous_state = self._last_status or self._state_manager.state
+
         if active_alarms:
             new_state = MachineState.ALARM
         elif rows:
-            # Tabloda veri var ama alarm yoksa çalışıyor demektir
             new_state = MachineState.WORKING
         else:
             new_state = MachineState.IDLE
 
-        previous_state = self._last_status or self._state_manager.state
+        # Yeni alarmlar varsa TEK mesajda birleştir
+        if new_alarms and active_alarms:
+            new_active = [r for r in active_alarms if self._make_alarm_key(r) in new_alarms]
+            self._on_new_alarms_batch(new_active, ts)
 
-        # Yeni alarm geldi mi?
-        for alarm_row in active_alarms:
-            key = self._make_alarm_key(alarm_row)
-            if key in new_alarms:
-                self._on_new_alarm(alarm_row, ts)
-
-        # Alarm temizlendi mi?
-        if cleared_alarms and not active_alarms:
+        # Alarm temizlenmiş mi?
+        if cleared_alarms_list and not active_alarms:
             self._on_all_alarms_cleared(ts)
 
-        # Durum değişikliği var mı?
+        # Durum değişikliği
         if new_state != previous_state:
             self._on_state_change(previous_state, new_state, rows, ts)
 
-        # Durumu güncelle
         self._last_alarm_keys = current_alarm_keys
         self._last_status = new_state
 
     def _make_alarm_key(self, row: OcrAlarmRow) -> str:
-        """Alarm satırından benzersiz anahtar üretir."""
-        parts = [row.alarm_info or "", row.alarm_id or "", row.status or ""]
-        return "::".join(parts)
+        return "::".join([row.alarm_info or "", row.alarm_id or "", row.status or ""])
 
-    def _on_new_alarm(self, alarm_row: OcrAlarmRow, ts: str) -> None:
-        """Yeni bir alarm tespit edildiğinde çağrılır."""
-        alarm_text = (
-            f"{alarm_row.alarm_info or 'Bilinmeyen alarm'} "
-            f"(ID: {alarm_row.alarm_id or '?'}, Durum: {alarm_row.status or '?'})"
-        )
+    # ------------------------------------------------------------------
+    # Batch alarm bildirimi (tüm alarmlar TEK mesaj)
+    # ------------------------------------------------------------------
 
-        key = f"OCR_ALARM::{self._make_alarm_key(alarm_row)}"
-        now = datetime.now()
-
-        if not self._cooldown_ok(key, now):
-            logger.info("OCR alarm cooldown aktif, atlandı: %s", alarm_text)
+    def _on_new_alarms_batch(self, alarm_rows: list[OcrAlarmRow], ts: str) -> None:
+        if not alarm_rows:
             return
 
-        message = self._format_ocr_alarm_message(alarm_row, ts)
+        now = datetime.now()
+        cooldown_key = f"OCR_BATCH::{ts[:10]}"
+        if not self._cooldown_ok(cooldown_key, now):
+            logger.info("Batch alarm cooldown aktif, atlandı.")
+            return
+
+        parts: list[str] = [
+            "\U0001f6a8 Alarm Tespit Edildi",
+            "",
+            f"Makine: {self._config.machine_name}",
+            f"Saat: {ts}",
+            "",
+        ]
+
+        for i, row in enumerate(alarm_rows):
+            code = row.get_alarm_code()
+            eid = row.alarm_id or _extract_error_code(str(row.alarm_info or '') + str(row.status or '')) or '?'
+            desc = row.get_turkish_description()
+
+            if i > 0:
+                parts.append("")
+
+            parts.append(f"\u2757 Alarm {i+1}: {code or 'Bilinmeyen Alarm'}")
+
+            row_ts = row.timestamp or (_extract_error_code(
+                str(row.alarm_info or '') + str(row.status or '')
+            ) and '')
+            if row_ts:
+                parts.append(f"Alarm zamanı: {row_ts}")
+
+            parts.append("")
+            parts.append(desc)
+
+            raw_info = _translate_chinese(str(row.alarm_info or '')) or '-'
+            raw_status = _translate_chinese(str(row.status or '')) or '-'
+            if raw_info not in ('-', '') and raw_info not in desc:
+                parts.append(f"Ham metin: {raw_info}")
+            if raw_status not in ('-', '') and raw_status != raw_info and raw_status not in desc:
+                parts.append(f"Durum: {raw_status}")
+
+        parts.append("")
+        parts.append("Birden fazla alarm varsa yukarıda listelenmiştir.")
+
+        message = "\n".join(parts)
         sent = self._telegram.send_message(message)
 
-        self._cooldown_repo.set_last_sent(key, now)
-        self._alarm_repo.insert(
-            alarm_text=alarm_text,
-            raw_line=f"OCR:{alarm_row.to_dict()}",
-            occurred_at=now,
-            telegram_sent=sent,
-        )
+        self._cooldown_repo.set_last_sent(cooldown_key, now)
+
+        for row in alarm_rows:
+            alarm_text = (
+                f"{row.alarm_info or '?'} "
+                f"(ID: {row.alarm_id or '?'}, Durum: {row.status or '?'})"
+            )
+            self._alarm_repo.insert(
+                alarm_text=alarm_text,
+                raw_line=f"OCR:{row.to_dict()}",
+                occurred_at=now,
+                telegram_sent=sent,
+            )
 
         if sent:
-            logger.info("OCR alarm bildirimi gönderildi: %s", alarm_text)
+            logger.info("Batch alarm bildirimi gönderildi (%d alarm)", len(alarm_rows))
         else:
-            logger.warning("OCR alarm bildirimi gönderilemedi: %s", alarm_text)
+            logger.warning("Batch alarm bildirimi GÖNDERİLEMEDİ (%d alarm)", len(alarm_rows))
 
     def _on_all_alarms_cleared(self, ts: str) -> None:
-        """Tüm alarm satırları tablodan silindiğinde çağrılır."""
         message = (
-            "✅ Alarm Temizlendi (OCR)\n"
+            "\u2705 Alarmlar Temizlendi\n"
             "\n"
             f"Makine: {self._config.machine_name}\n"
             f"Saat: {ts}\n"
             "\n"
-            "Tabloda aktif alarm kalmadı."
+            "Tüm alarmlar kalktı, makine çalışmaya hazır."
         )
         self._telegram.send_message(message)
-        logger.info("OCR alarm temizleme bildirimi gönderildi.")
+        logger.info("Alarm temizleme bildirimi gönderildi.")
+
+    # ------------------------------------------------------------------
+    # Durum değişikliği
+    # ------------------------------------------------------------------
 
     def _on_state_change(
         self,
@@ -260,53 +404,36 @@ class OcrMonitorService:
         rows: list[OcrAlarmRow],
         ts: str,
     ) -> None:
-        """Durum değişikliğinde çağrılır."""
-        # Pseudo-event oluştur (mevcut sisteme entegre etmek için)
-        if current == MachineState.ALARM:
-            event = ParsedEvent(
-                kind=EventKind.ALARM,
-                timestamp=datetime.now(),
-                text="OCR: Alarm durumu tespit edildi",
-                raw_line=f"OCR:{[r.to_dict() for r in rows]}",
-            )
-        elif current == MachineState.WORKING:
-            if previous == MachineState.ALARM:
-                event = ParsedEvent(
-                    kind=EventKind.RESUME,
-                    timestamp=datetime.now(),
-                    text="OCR: Çalışmaya devam ediliyor",
-                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
-                )
-            else:
-                event = ParsedEvent(
-                    kind=EventKind.START,
-                    timestamp=datetime.now(),
-                    text="OCR: Çalışma başladı",
-                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
-                )
-        elif current == MachineState.PAUSED:
-            event = ParsedEvent(
-                kind=EventKind.STOP,
-                timestamp=datetime.now(),
-                text="OCR: Makine durdu",
-                raw_line=f"OCR:{[r.to_dict() for r in rows]}",
-            )
-        else:
+        event, icon, title = self._build_state_event(previous, current, rows, ts)
+        if event is None:
             return
 
         result = self._state_manager.process(event)
         if not result.changed:
             return
 
-        # Bildirim gönder
-        if current == MachineState.ALARM:
-            message = self._format_state_change_message("🚨 Alarm Durumu", ts, rows)
-        elif current == MachineState.WORKING:
-            message = self._format_state_change_message("▶️ Çalışıyor", ts, rows)
-        elif current == MachineState.PAUSED:
-            message = self._format_state_change_message("⏸️ Durdu", ts, rows)
-        else:
-            return
+        message = (
+            f"{icon} {title}\n"
+            "\n"
+            f"Makine: {self._config.machine_name}\n"
+            f"Saat: {ts}\n"
+        )
+
+        # Aktif alarm bilgisi ekle
+        alarm_lines = []
+        for row in rows:
+            if row.is_alarm_active:
+                desc = _translate_chinese(str(row.alarm_info or row.status or ''))
+                eid = row.alarm_id or '?'
+                alarm_lines.append(f"  \u2022 {desc} (ID: {eid})")
+
+        if alarm_lines:
+            message += f"\nAktif Alarm:\n" + "\n".join(alarm_lines)
+
+        # İş süresi bilgisi (working başlangıcı/durdurma)
+        if current == MachineState.WORKING and previous in (MachineState.IDLE, MachineState.PAUSED):
+            # Yeni başlangıç
+            pass  # süre bir sonraki duuruşta hesaplanır
 
         sent = self._telegram.send_message(message)
         self._state_repo.save(
@@ -321,53 +448,123 @@ class OcrMonitorService:
             occurred_at=datetime.now(),
             telegram_sent=sent,
         )
-        logger.info("OCR durum değişikliği: %s -> %s", previous.value, current.value)
+        logger.info("Durum: %s -> %s (%s)", previous.value, current.value, title)
+
+    def _build_state_event(
+        self,
+        previous: MachineState,
+        current: MachineState,
+        rows: list[OcrAlarmRow],
+        ts: str,
+    ):
+        """Durum değişikliği için event, ikon ve başlık döndürür."""
+        # Önce OCR satırlarındaki olay türüne bak
+        has_alarm = any(r.event_kind == 'alarm' for r in rows)
+        has_alarm_clear = any(r.event_kind == 'alarm_clear' for r in rows)
+        has_stop = any(r.event_kind == 'stop' for r in rows)
+        has_start = any(r.event_kind == 'start' for r in rows)
+        has_resume = any(r.event_kind == 'resume' for r in rows)
+
+        now = datetime.now()
+
+        if current == MachineState.ALARM:
+            event = ParsedEvent(
+                kind=EventKind.ALARM,
+                timestamp=now,
+                text="OCR: Alarm durumu tespit edildi",
+                raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+            )
+            icon = "\U0001f6a8"
+            title = "Alarm Durumu"
+            return event, icon, title
+
+        if current == MachineState.WORKING:
+            if previous == MachineState.ALARM:
+                event = ParsedEvent(
+                    kind=EventKind.RESUME,
+                    timestamp=now,
+                    text="OCR: Alarm çözüldü, çalışıyor",
+                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                )
+                icon = "\u2705"
+                title = "Alarm Çözüldü, Çalışıyor"
+            elif has_resume or previous == MachineState.PAUSED:
+                event = ParsedEvent(
+                    kind=EventKind.RESUME,
+                    timestamp=now,
+                    text="OCR: Makine devam ediyor",
+                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                )
+                icon = "\u25b6\ufe0f"
+                title = "Devam Ediyor"
+            else:
+                event = ParsedEvent(
+                    kind=EventKind.START,
+                    timestamp=now,
+                    text="OCR: Çalışma başladı",
+                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                )
+                icon = "\u25b6\ufe0f"
+                title = "Çalışma Başladı"
+            return event, icon, title
+
+        if current == MachineState.PAUSED:
+            # İş bitti mi yoksa sadece duraklama mı?
+            has_completion_hint = any(
+                "stop" in (r.operation or '').lower() and 'nest' in (r.alarm_info or '').lower()
+                for r in rows
+            )
+            if has_completion_hint or has_stop:
+                event = ParsedEvent(
+                    kind=EventKind.STOP,
+                    timestamp=now,
+                    text="OCR: İş tamamlandı",
+                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                )
+                icon = "\u23f9\ufe0f"
+                title = "İş Tamamlandı"
+            else:
+                event = ParsedEvent(
+                    kind=EventKind.STOP,
+                    timestamp=now,
+                    text="OCR: Makine durdu",
+                    raw_line=f"OCR:{[r.to_dict() for r in rows]}",
+                )
+                icon = "\u23f8\ufe0f"
+                title = "Makine Durdu"
+            return event, icon, title
+
+        return None, None, None
+
+    # ------------------------------------------------------------------
+    # Mesaj formatlama (eski uyumluluk)
+    # ------------------------------------------------------------------
 
     def _format_ocr_alarm_message(self, alarm_row: OcrAlarmRow, ts: str) -> str:
-        """OCR alarm mesajı formatlar."""
+        code = alarm_row.get_alarm_code() or 'Bilinmeyen'
+        desc = alarm_row.get_turkish_description()
         return (
-            "🚨 Lazer Alarmı (OCR)\n"
+            "\U0001f6a8 Lazer Alarm\u0131 (OCR)\n"
             "\n"
             f"Makine: {self._config.machine_name}\n"
             f"Saat: {ts}\n"
             "\n"
-            f"Alarm: {alarm_row.alarm_info or 'Bilinmeyen'}\n"
-            f"ID: {alarm_row.alarm_id or '?'}\n"
-            f"Durum: {alarm_row.status or '?'}\n"
-            f"Zaman: {alarm_row.timestamp or '?'}"
-        )
-
-    def _format_state_change_message(
-        self, title: str, ts: str, rows: list[OcrAlarmRow]
-    ) -> str:
-        """Durum değişikliği mesajı formatlar."""
-        alarm_lines = []
-        for row in rows:
-            if row.is_alarm_active:
-                alarm_lines.append(
-                    f"  • {row.alarm_info or '?'} (ID: {row.alarm_id or '?'})"
-                )
-        alarm_block = "\n".join(alarm_lines) if alarm_lines else "  Yok"
-
-        return (
-            f"{title} (OCR)\n"
+            f"{code}\n"
             "\n"
-            f"Makine: {self._config.machine_name}\n"
-            f"Saat: {ts}\n"
-            "\n"
-            f"Aktif Alarmlar:\n"
-            f"{alarm_block}"
+            f"{desc}"
         )
 
     def _cooldown_ok(self, key: str, now: datetime) -> bool:
-        """Cooldown süresi dolmuş mu kontrol eder."""
         last = self._cooldown_repo.get_last_sent(key)
         if last is None:
             return True
         return (now - last).total_seconds() >= self._config.alarm_cooldown_seconds
 
+    # ------------------------------------------------------------------
+    # OCR log
+    # ------------------------------------------------------------------
+
     def _log_ocr_data(self, ts: str, raw_text: str) -> None:
-        """OCR ham verisini txt dosyasına loglar."""
         try:
             with open(self._ocr_log_path, "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*60}\n")
@@ -375,28 +572,25 @@ class OcrMonitorService:
                 f.write(f"{'='*60}\n")
                 f.write(raw_text)
                 f.write("\n")
-
-                # Ayrıştırılmış satırları da ekle
                 rows = parse_ocr_text(raw_text)
                 if rows:
-                    f.write(f"\n--- Ayrıştırılmış Tablo ---\n")
+                    f.write("\n--- Ayrıştırılmış ---\n")
                     f.write(format_table(rows))
-                    f.write("\n")
-
-                # Durum bilgisi
+                    f.write("\n\nTürkçe:\n")
+                    for r in rows:
+                        if r.is_alarm_active:
+                            f.write(f"  {r.get_alarm_code() or '?'}: {r.get_turkish_description()}\n")
                 f.write(f"\n--- Durum ---\n")
-                f.write(f"Mevcut durum: {self._last_status or 'Bilinmiyor'}\n")
-                f.write(f"Aktif alarmlar: {len(self._last_alarm_keys)}\n")
+                f.write(f"Durum: {self._last_status or '?'}\n")
+                f.write(f"Arkaplan: {'Evet' if self._background_since is not None else 'Hayır'}\n")
+                f.write(f"Hata sayısı: {self._consecutive_failures}\n")
                 f.write("\n")
-
-            logger.debug("OCR verisi loglandı: %s", self._ocr_log_path)
+            logger.debug("OCR loglandı.")
         except Exception as exc:
-            logger.warning("OCR log yazma hatası: %s", exc)
+            logger.warning("OCR log hatası: %s", exc)
 
 
 class OcrMonitorLoop(threading.Thread):
-    """OcrMonitorService'in çalışmasını ayrı bir thread'de yönetir."""
-
     def __init__(self, service: OcrMonitorService) -> None:
         super().__init__(name="OcrMonitorLoop", daemon=True)
         self._service = service
@@ -406,7 +600,6 @@ class OcrMonitorLoop(threading.Thread):
 
     def run(self) -> None:
         self._service.start()
-        # Service kendi thread'ini yönetir, burada sadece block ederiz
         while self._service._thread is not None and self._service._thread.is_alive():
             time.sleep(1.0)
 

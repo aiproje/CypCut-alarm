@@ -86,6 +86,18 @@ class AppConfig:
     ocr_monitor_interval: float
     ocr_log_path: Path
 
+    # Stream server ayarları
+    stream_enabled: bool
+    stream_port: int
+    stream_width: int
+    stream_height: int
+    stream_fps: int
+    stream_quality: int
+
+    # CypCut arkaplan tespit ayarları
+    background_check_enabled: bool
+    background_long_threshold_seconds: int
+
     @classmethod
     def load(cls, env_file: Path | None = None) -> "AppConfig":
         """`.env` dosyasını yükleyerek yapılandırmayı oluşturur."""
@@ -140,6 +152,14 @@ class AppConfig:
                 _get_env("OCR_LOG_PATH", "logs/ocr_data.txt") or "logs/ocr_data.txt",
                 base,
             ),
+            stream_enabled=_get_env_bool("STREAM_ENABLED", True),
+            stream_port=_get_env_int("STREAM_PORT", 2373),
+            stream_width=_get_env_int("STREAM_WIDTH", 640),
+            stream_height=_get_env_int("STREAM_HEIGHT", 480),
+            stream_fps=_get_env_int("STREAM_FPS", 10),
+            stream_quality=_get_env_int("STREAM_QUALITY", 70),
+            background_check_enabled=_get_env_bool("BACKGROUND_CHECK_ENABLED", True),
+            background_long_threshold_seconds=_get_env_int("BACKGROUND_LONG_THRESHOLD_SECONDS", 300),
         )
 
     def validate(self) -> list[str]:
@@ -155,6 +175,18 @@ class AppConfig:
             errors.append("LOG_DIR tanımlı değil.")
         if self.video_duration < 1.0:
             errors.append("VIDEO_DURATION 1 saniyeden az olamaz.")
+        if self.stream_port < 1 or self.stream_port > 65535:
+            errors.append("STREAM_PORT 1-65535 aralığında olmalı.")
+        if self.stream_width < 160 or self.stream_width > 1920:
+            errors.append("STREAM_WIDTH 160-1920 aralığında olmalı.")
+        if self.stream_height < 120 or self.stream_height > 1080:
+            errors.append("STREAM_HEIGHT 120-1080 aralığında olmalı.")
+        if self.stream_fps < 1 or self.stream_fps > 30:
+            errors.append("STREAM_FPS 1-30 aralığında olmalı.")
+        if self.stream_quality < 10 or self.stream_quality > 100:
+            errors.append("STREAM_QUALITY 10-100 aralığında olmalı.")
+        if self.background_long_threshold_seconds < 60:
+            errors.append("BACKGROUND_LONG_THRESHOLD_SECONDS 60 saniyeden az olamaz.")
         return errors
 
 
